@@ -1,0 +1,2837 @@
+import React, { useState, useId, useEffect, useRef } from 'react';
+import { 
+  Home, FileText, ChevronDown, ChevronRight, Copy, Check, X, LogOut, Plus, Trash2,
+  Folder, ClipboardList 
+} from 'lucide-react'; 
+
+// --- FIREBASE IMPORTS ---
+import { initializeApp } from 'firebase/app';
+import { 
+    getAuth, 
+    signInAnonymously, 
+    signInWithCustomToken, 
+    onAuthStateChanged, 
+    setPersistence, 
+    browserSessionPersistence 
+} from 'firebase/auth';
+import { 
+    getFirestore, 
+    doc, 
+    setDoc, 
+    getDoc, 
+    serverTimestamp,
+    setLogLevel
+} from 'firebase/firestore';
+
+
+// --- FIREBASE CONFIG (Global) ---
+// These are provided by the environment
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+let db, auth;
+let firebaseInitialized = false;
+
+// Initialize Firebase
+try {
+    if (Object.keys(firebaseConfig).length > 0) {
+        const app = initializeApp(firebaseConfig);
+        db = getFirestore(app);
+        auth = getAuth(app);
+        setLogLevel('debug'); // Enable Firestore logging
+        firebaseInitialized = true;
+    } else {
+        console.warn("Firebase configuration is missing.");
+    }
+} catch (error) {
+    console.error("Firebase initialization failed:", error);
+}
+
+// Utility function for copying to clipboard (iFrame compatible)
+const copyToClipboard = (text, setCopied) => {
+    // Fallback logic for iFrames
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    document.body.appendChild(textarea);
+    textarea.select();
+    try {
+        document.execCommand('copy');
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+        console.error('Failed to copy text: ', err);
+    }
+    document.body.removeChild(textarea);
+};
+
+// --- BASE FORM STYLES ---
+const getStyles = (lightMode) => ({
+    input: { backgroundColor: lightMode ? '#fff' : '#1a1a1a', color: lightMode ? '#000' : '#fff', borderColor: lightMode ? '#d1d5db' : '#4b5563' },
+    label: { color: lightMode ? '#4b5653' : '#d1d5db' },
+    button: { backgroundColor: lightMode ? '#e0e0e0' : '#374151', color: lightMode ? '#000' : '#fff' }, // Dark Gray button
+    copyButton: { backgroundColor: lightMode ? '#e0e0e0' : '#1f2937', color: lightMode ? '#000' : '#fff' }, // Darker gray for copy
+    clearButton: { backgroundColor: lightMode ? '#fef2f2' : '#991b1b', color: lightMode ? '#991b1b' : '#fef2f2' }, // Red 'clear' button
+    moduleButton: { backgroundColor: lightMode ? '#f0f9ff' : '#1e3a8a', color: lightMode ? '#0a528c' : '#dbeafe' }, // Blue 'add module' button
+    moduleRemoveButton: { backgroundColor: lightMode ? '#fef2f2' : '#991b1b', color: lightMode ? '#991b1b' : '#fef2f2' } // Red 'remove module' button
+});
+
+// --- EMPTY FORM STATES (NOW FUNCTIONS) ---
+// These are now functions that accept the user's combined name to pre-populate fields.
+const getNarcoticConfiscationInitialState = (combinedName) => ({
+  date: '', fullName: '', phoneNumber: '', locationOfDiscovery: '',
+  substances: 'x## gram(s) SName [b]Schedule:[/b] S#\n',
+  components: 'x## CName\n', narrative: '',
+});
+
+const getCovertIncidentInitialState = (combinedName) => ({
+  date: '', sceneSupervisor: '', officersInvolved: combinedName, arrestIncidentReports: '',
+  summarizeDeployment: '', location: '', weaponUsed: '', dischargeReason: '', injuredParties: '',
+});
+
+const getAdmissionsOfGuiltInitialState = (combinedName) => ({
+  date: '', suspectName: '', suspectPhone: '',
+  writtenStatement: 'STATEMENT HERE',
+  charges: 'Charge\nCharge\nCharge',
+  counselChoice: 'present', counselName: '',
+  confessingPartyName: '', overseeingOfficerName: '', // Emptied per request
+  proofImages: 'IMAGES',
+});
+
+const getTraceLogInitialState = (combinedName) => ({
+  date: '', fullName: '', phoneNumber: '', selectedReasons: [],
+});
+
+const getOperationLogsInitialState = (combinedName) => ({
+  leadDetective: '', leadSwatOperative: '', assistingOfficers: combinedName, // 'leadDetective' emptied
+  operationType: 'Raid', dateTime: '',
+  suspectsApprehended: '', assetsSeized: '',
+});
+
+const getMonetaryRecoveryInitialState = (combinedName) => ({
+  date: '', personPossession: '', possessionPhone: '', othersInvolved: combinedName,
+  amount: '', type: '', source: '', narrative: '',
+});
+
+const getFirearmsInitialState = (combinedName) => ({
+  headerType: 'situation', dateTime: '', officers: combinedName, narrative: '', location: '',
+  informedTime: '', weaponType: 'Combat Pistol', isIllegal: false, ammunition: '',
+  modifications: 'None', serialNumber: '', serialOOC: '', registeredOwner: '',
+  ownerPhone: '', source: '', recentlyUsed: 'No', 
+  personPossession: '', 
+  possessionPhone: '', weaponOutcome: '',
+});
+
+// --- CASE FILE INITIAL STATE ---
+const getCaseFileInitialState = (combinedName) => ({
+  startingDate: '',
+  assignedUnit: 'DSU', // NEW: Default to DSU
+  caseFileNumber: '',
+  // NEW: Updated to be arrays of objects
+  overseeingOfficers: [{ id: `officer_${Date.now()}`, name: combinedName || 'Rank Firstname Lastname', unit: 'DSU' }],
+  assistingOfficers: [{ id: `officer_${Date.now() + 1}`, name: 'Rank Firstname Lastname', unit: 'DSU' }],
+  caseLogs: '[url=LINK HERE]TITLE[/url]\n',
+  narrative: 'Describe what the case is about, what started it, associated crime reports, etc. Include all the details that may help whoever is reading the case for the first time.',
+  signatureLink: '', // Kept for legacy data, but overridden by globalSignature
+  customSignature: '', // NEW: For custom signature
+  evidenceModules: [], 
+});
+
+// --- LOGGING UPDATE INITIAL STATE ---
+const getLoggingUpdatesInitialState = (combinedName, globalSignature) => ({
+  re: 'Casefile update',
+  relevantInfo: 'Relevant information.',
+  updates: 'Suspect #1;\nWitness #1;\nExhibit #1.',
+  signature: globalSignature || `[img]SIGNATURE[/img]\nFNAME LNAME, Police Rank\nDetective Support Officer, Detective Support Unit\nLos Santos Police Department`,
+});
+
+// --- CASE CONCLUSION INITIAL STATE ---
+const getCaseConclusionInitialState = (combinedName, globalSignature) => ({
+  re: 'Casefile conclusion',
+  closingStatement: 'A closing statement / paragraph for reasoning the conclusion of the case and what action was taken why. Please be as detailed as possible as this section could assist in the case of any court appeals.',
+  conclusionDetails: 'Charges filed\nAssets seized\netc.',
+  signature: globalSignature || `[img]SIGNATURE[/img]\nFNAME LNAME, Police Rank\nDetective Support Officer, Detective Support Unit\nLos Santos Police Department`,
+});
+
+// --- EVIDENCE MODULES INITIAL STATES ---
+const getSuspectLogInitialState = () => ({
+  fname: '',
+  lname: '',
+  description: 'SKIN, GENDER // HAIR / FACIAL HAIR, DESC, FEATURES // CLOTHING',
+  phone: '#XXXXXXX',
+  vehicles: 'COLOR MODEL - [LICENSE PLATE]',
+  info: 'ADDITIONAL INFORMATION',
+  charges: 'CHARGECODE - CHARGENAME\nWF03 - Possession of Illegal Firearms/Weapons',
+  bbcode: '',
+  copied: false
+});
+
+const getVictimWitnessLogInitialState = () => ({
+  fname: '',
+  lname: '',
+  phone: '0000000',
+  statement: 'STATEMENT',
+  date: '',
+  officerSignature: '', // e.g., "Rondal Olsson"
+  officerRank: '', // e.g., "Detective I"
+  bbcode: '',
+  copied: false
+});
+
+const getInterrogationLogInitialState = () => ({
+  fname: '',
+  lname: '',
+  detectiveName: '',
+  detectiveInitials: '',
+  transcript: 'DETECTIVE NAME (DETECTIVE INITIALS): TRANSCRIPT\nSUSPECT NAME(SUSPECT INITIALS): TRANSCRIPT\nDI: TRANSCRIPT\nSI: TRANSCRIPT',
+  date: '',
+  officerSignature: '', // e.g., "Rondal Olsson"
+  officerRank: '', // e.g., "Detective I"
+  bbcode: '',
+  copied: false
+});
+
+const getMediaLogInitialState = () => ({
+  exhibitNumber: '00',
+  item: 'ITEM',
+  description: 'DESCRIPTION',
+  link: '',
+  linkName: '',
+  media: '',
+  bbcode: '',
+  copied: false
+});
+
+const getOperationLogStandaloneInitialState = (combinedName) => ({
+  operationName: 'Operation Name',
+  date: 'DD/MMM/YYYY',
+  investigators: [{ id: `officer_${Date.now()}`, name: combinedName || 'Rank Firstname Lastname', unit: 'DSU' }],
+  report: 'DESCRIPTION OF THE OPERATION AND OBJECTIVES ACHIEVED',
+  documentationImages: '[img]PHOTOGRAPHIC DOCUMENTATION[/img]',
+  documentationLinks: '[url=VIDEO OR OTHER DOCUMENTATION]TITLE[/url]',
+  bbcode: '',
+  copied: false
+});
+
+// --- MULTI-PAGE FORM WRAPPER (FOR PRIMARY REPORTS) ---
+function MultiPageFormWrapper({ FormComponent, formTitle, initialState, lightMode, postUrl, userId, globalSignature }) { 
+  const styles = getStyles(lightMode);
+  
+  // Pass global signature to initial state function if it expects it
+  const finalInitialState = typeof initialState === 'function' 
+    ? initialState(null, globalSignature) // Pass null for combinedName if not needed, or adjust
+    : initialState;
+
+  // Default state before loading
+  const defaultPage = { id: 1, title: 'Report 1', data: { ...finalInitialState, bbcode: '', copied: false } };
+  
+  const [pages, setPages] = useState([defaultPage]);
+  const [activePageIndex, setActivePageIndex] = useState(0);
+  const [isLoading, setIsLoading] = useState(true); // Loading state
+
+  const debounceTimer = useRef(null);
+  const docRef = useRef(null); // Store the docRef
+
+  // --- 1. LOAD DATA FROM FIRESTORE (ON MOUNT) ---
+  useEffect(() => {
+    if (!userId || !firebaseInitialized) {
+        setIsLoading(false); // Not loading if no user
+        setPages([defaultPage]); // Ensure default page is set
+        setActivePageIndex(0);
+        return;
+    }
+    
+    // Set the docRef for this user and form
+    docRef.current = doc(db, 'artifacts', appId, 'users', userId, 'reports', formTitle);
+    
+    const loadReportData = async () => {
+        setIsLoading(true);
+        try {
+            const docSnap = await getDoc(docRef.current);
+            if (docSnap.exists()) {
+                const data = docSnap.data();
+                // Ensure pages aren't empty (e.g., if Firestore doc is corrupted)
+                if (data.pages && data.pages.length > 0) {
+                    // Check if loaded data needs global signature (for older saves)
+                    const updatedPages = data.pages.map(page => {
+                      // START: More robust check
+                      const loadedData = page.data || {};
+                      const initialState = finalInitialState;
+
+                      // Ensure array fields are arrays
+                      if (!Array.isArray(loadedData.overseeingOfficers)) {
+                        loadedData.overseeingOfficers = initialState.overseeingOfficers || [{ id: `officer_${Date.now()}`, name: 'Rank Firstname Lastname', unit: 'DSU' }];
+                      }
+                      if (!Array.isArray(loadedData.assistingOfficers)) {
+                        loadedData.assistingOfficers = initialState.assistingOfficers || [{ id: `officer_${Date.now() + 1}`, name: 'Rank Firstname Lastname', unit: 'DSU' }];
+                      }
+
+                      return {
+                        ...page,
+                        data: {
+                          ...initialState, // Start with fresh initial state
+                          ...loadedData,   // Overlay saved data (now with corrected arrays)
+                          signature: loadedData.signature || globalSignature // Ensure signature is present
+                        }
+                      };
+                      // END: More robust check
+                    });
+                    setPages(updatedPages);
+                    setActivePageIndex(data.activePageIndex || 0);
+                } else {
+                    // Firestore doc exists but has no pages, reset to default
+                    setPages([defaultPage]);
+                    setActivePageIndex(0);
+                }
+            } else {
+                // No doc found, use default state
+                setPages([defaultPage]);
+                setActivePageIndex(0);
+            }
+        } catch (error) {
+            console.error("Error loading report data:", error);
+            setPages([defaultPage]); // Fallback on error
+            setActivePageIndex(0);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+    
+    loadReportData();
+
+  }, [userId, formTitle, globalSignature]); // Rerun if user or form or global signature changes
+
+  // --- 2. SAVE DATA TO FIRESTORE (DEBOUNCED) ---
+  useEffect(() => {
+    // Don't save while loading or if there's no user/docRef
+    if (isLoading || !userId || !docRef.current) {
+        return;
+    }
+
+    // Clear the previous timer
+    if (debounceTimer.current) {
+        clearTimeout(debounceTimer.current);
+    }
+
+    // Set a new timer to save data after 1.5s of inactivity
+    debounceTimer.current = setTimeout(async () => {
+        try {
+            await setDoc(docRef.current, { pages, activePageIndex });
+            console.log(`Saved reports for ${formTitle}`);
+        } catch (error) {
+            console.error("Error saving report data:", error);
+        }
+    }, 1500); // 1.5-second debounce
+
+    // Cleanup timer on component unmount
+    return () => {
+        if (debounceTimer.current) {
+            clearTimeout(debounceTimer.current);
+        }
+    };
+
+  }, [pages, activePageIndex, userId, formTitle, isLoading]); // Rerun on any data change
+
+
+  // Guard against no active page (e.g., during rapid state changes)
+  const activePage = pages[activePageIndex];
+  if (isLoading) {
+    return <div className="text-center py-12" style={{ color: lightMode ? '#666' : '#9ca3af' }}>Loading reports...</div>;
+  }
+  if (!activePage) {
+    return null; 
+  }
+
+  // Function to update the data for the *current* active page
+  const setPageData = (newData) => {
+    setPages(currentPages => {
+        const newPages = [...currentPages];
+        if (newPages[activePageIndex]) {
+            newPages[activePageIndex].data = { ...newPages[activePageIndex].data, ...newData };
+        }
+        return newPages;
+    });
+  };
+
+  const addPage = () => {
+    const newPageNumber = pages.length + 1;
+    setPages([
+      ...pages,
+      { id: Date.now(), title: `Report ${newPageNumber}`, data: { ...finalInitialState, bbcode: '', copied: false } }
+    ]);
+    setActivePageIndex(pages.length); // Switch to the new page
+  };
+
+  const closePage = (indexToClose) => {
+    if (pages.length <= 1) return; // Don't close the last page
+    
+    const newPages = pages.filter((_, index) => index !== indexToClose);
+    const newActiveIndex = Math.max(0, activePageIndex - (activePageIndex >= indexToClose ? 1 : 0));
+    
+    // Clear debounce and save immediately
+    if (debounceTimer.current) clearTimeout(debounceTimer.current);
+    setDoc(docRef.current, { pages: newPages, activePageIndex: newActiveIndex });
+
+    setPages(newPages);
+    setActivePageIndex(newActiveIndex);
+  };
+
+  const clearCurrentPage = () => {
+    // Reset the data for the current tab
+    const newPages = [...pages];
+    newPages[activePageIndex].data = { ...finalInitialState, bbcode: '', copied: false };
+    
+    // Clear debounce and save immediately
+    if (debounceTimer.current) clearTimeout(debounceTimer.current);
+    setDoc(docRef.current, { pages: newPages, activePageIndex });
+
+    setPages(newPages);
+  };
+  
+  // Style for active vs inactive tabs
+  const getTabStyle = (index) => {
+    const isActive = index === activePageIndex;
+    return {
+      backgroundColor: isActive 
+        ? (lightMode ? '#fff' : '#1a1a1a') 
+        : (lightMode ? '#f3f4f6' : '#374151'),
+      color: lightMode ? '#000' : '#fff',
+      borderTop: `4px solid ${isActive ? '#3b82f6' : 'transparent'}`,
+      borderRight: '1px solid ' + (lightMode ? '#e5e7eb' : '#4b5563')
+    };
+  };
+
+  return (
+    <div>
+      {/* Dynamic Header and Clear Button */}
+      <div className="flex justify-between items-center mb-4">
+        <h2 className="text-2xl" style={{ color: lightMode ? '#000' : '#f3f4f6' }}>{formTitle}</h2>
+        <button 
+          onClick={clearCurrentPage} 
+          className="px-4 py-2 rounded text-sm font-medium hover:opacity-80 transition duration-150" 
+          style={styles.clearButton}
+        >
+          Clear Current Page
+        </button>
+      </div>
+      
+      {/* Tab Navigation */}
+      <div className="flex items-end border-b" style={{ borderColor: lightMode ? '#e5e7eb' : '#4b5563' }}>
+        {pages.map((page, index) => (
+          <button 
+            key={page.id}
+            onClick={() => setActivePageIndex(index)}
+            className="flex items-center gap-2 px-4 pt-3 pb-2 rounded-t-lg text-sm font-medium"
+            style={getTabStyle(index)}
+          >
+            {page.title}
+            {pages.length > 1 && (
+              <X 
+                size={14} 
+                className="hover:text-red-500"
+                onClick={(e) => { e.stopPropagation(); closePage(index); }} 
+              />
+            )}
+          </button>
+        ))}
+        <button 
+          onClick={addPage}
+          className="px-4 py-2 text-sm font-bold" 
+          style={{ color: lightMode ? '#6b7280' : '#9ca3af' }}
+        >
+          +
+        </button>
+      </div>
+
+      {/* Render the actual form, passing its current page's data and a function to update it */}
+      <div className="pt-6" style={{ 
+            backgroundColor: lightMode ? '#fff' : '#1a1a1a', 
+            borderColor: (lightMode ? '#e5e7eb' : '#4b5563'),
+            borderStyle: 'solid',
+            borderWidth: '1px',
+            borderTopWidth: '0',
+            padding: '1.5rem'
+      }}>
+        <FormComponent 
+          lightMode={lightMode}
+          formData={activePage.data}
+          setFormData={setPageData}
+          postUrl={postUrl} // Pass the URL down to the form
+          globalSignature={globalSignature} // Pass global sig to forms that need it
+        />
+      </div>
+    </div>
+  );
+}
+
+
+// --- 1. NARCOTIC CONFISCATION FORM (REFACTORED) ---
+function NarcoticConfiscationForm({ lightMode, formData, setFormData, postUrl }) { // Added postUrl
+  // ... (rest of form component) ...
+  // [FORM CODE OMITTED FOR BREVITY, no changes from previous version]
+  // ...
+  const { 
+    date, fullName, phoneNumber, locationOfDiscovery, 
+    substances, components, narrative, bbcode, copied 
+  } = formData;
+  
+  const styles = getStyles(lightMode);
+  
+  const handleChange = (field, value) => {
+    setFormData({ [field]: value });
+  };
+
+  const generateBBCode = () => {
+    let code = '[lspdfooter][/lspdfooter]\n\n';
+    code += '[divbox=white]\n';
+    code += '[dblogo=150][/dblogo][aligntable=right,350,0,0,0,0,#FFFFFF][right][font=Arial][b]\n';
+    code += '[size=150]Los Santos Police Department[/size][/b]\n';
+    code += '[size=115]NARCOTICS CONFISCATION REPORT[/size]\n';
+    code += '[size=95]"TO PROTECT AND TO SERVE"[/size][/font][/right][/aligntable]\n';
+    code += '[hr]\n';
+    code += '[list=none][b][size=115]CONFISCATION DETAILS[/size][/b]\n';
+    code += '[list=none]\n';
+    code += '[b]Date:[/b] ' + (date || 'DD/MMM/YYYY') + '\n\n';
+    code += '[b]Full Name:[/b] ' + (fullName || 'ANSWER') + '\n';
+    code += '[b]Phone Number:[/b] ' + (phoneNumber || 'ANSWER') + '\n';
+    code += '[b]Location of Discovery:[/b] ' + (locationOfDiscovery || 'ANSWER') + '\n';
+    code += '[/list]\n\n\n';
+    code += '[b][size=115]NARCOTIC DETAILS[/size][/b]\n';
+    code += '[list=none]\n';
+    
+    (substances || '').split('\n').forEach(line => {
+        if (line.trim()) code += '[b]Substance(s):[/b] ' + line.trim() + '\n';
+    });
+    code += '\n';
+
+    (components || '').split('\n').forEach(line => {
+        if (line.trim()) code += '[b]Component(s):[/b] ' + line.trim() + '\n';
+    });
+    code += '\n';
+
+    code += '[/list]\n\n\n';
+    code += '[b][size=115]CONFISCATION NARRATIVE[/size][/b]\n';
+    code += '[list=none]\n';
+    code += (narrative || 'ANSWER') + '\n\n';
+    code += '[/list]\n';
+    code += '[/divbox]\n\n';
+    code += '[lspdfooter][/lspdfooter]';
+    handleChange('bbcode', code);
+
+    copyToClipboard(code, (val) => handleChange('copied', val));
+    if (postUrl) {
+        window.open(postUrl, '_blank');
+    }
+  };
+
+  return (
+      <div className="space-y-6">
+        <div><label className="block mb-2" style={styles.label}>Date:</label><input type="text" value={date || ''} onChange={(e) => handleChange('date', e.target.value)} placeholder="DD/MMM/YYYY" className="border rounded px-4 py-2 w-full focus:ring-gray-600 focus:border-gray-600 transition" style={styles.input} /></div>
+        <div><label className="block mb-2" style={styles.label}>Full Name (Suspect):</label><input type="text" value={fullName || ''} onChange={(e) => handleChange('fullName', e.target.value)} placeholder="Fname Lname" className="border rounded px-4 py-2 w-full focus:ring-gray-600 focus:border-gray-600 transition" style={styles.input} /></div>
+        <div><label className="block mb-2" style={styles.label}>Phone Number:</label><input type="text" value={phoneNumber || ''} onChange={(e) => handleChange('phoneNumber', e.target.value)} className="border rounded px-4 py-2 w-full focus:ring-gray-600 focus:border-gray-600 transition" style={styles.input} /></div>
+        <div><label className="block mb-2" style={styles.label}>Location of Discovery:</label><input type="text" value={locationOfDiscovery || ''} onChange={(e) => handleChange('locationOfDiscovery', e.target.value)} className="border rounded px-4 py-2 w-full focus:ring-gray-600 focus:border-gray-600 transition" style={styles.input} /></div>
+        <hr style={{ borderColor: lightMode ? '#e0e0e0' : '#2d2d2d' }} />
+        
+        <div><label className="block mb-2 font-semibold" style={styles.label}>Substance(s) - One per line (e.g., x2 gram(s) Cocaine [b]Schedule:[/b] S2):</label><textarea value={substances || ''} onChange={(e) => handleChange('substances', e.target.value)} rows={4} className="border rounded px-4 py-2 w-full focus:ring-gray-600 focus:border-gray-600 transition resize-none font-mono text-sm" style={styles.input} /></div>
+        <div><label className="block mb-2" style={styles.label}>Component(s) - One per line (e.g., x5 Lye):</label><textarea value={components || ''} onChange={(e) => handleChange('components', e.target.value)} rows={4} className="border rounded px-4 py-2 w-full focus:ring-gray-600 focus:border-gray-600 transition resize-none font-mono text-sm" style={styles.input} /></div>
+        <hr style={{ borderColor: lightMode ? '#e0e0e0' : '#2d2d2d' }} />
+
+        <div><label className="block mb-2" style={styles.label}>Confiscation Narrative:</label><textarea value={narrative || ''} onChange={(e) => handleChange('narrative', e.target.value)} rows={6} className="border rounded px-4 py-2 w-full focus:ring-gray-600 focus:border-gray-600 transition resize-none" style={styles.input} /></div>
+        
+        <button onClick={generateBBCode} className="px-6 py-3 rounded font-medium w-full hover:opacity-80 transition duration-150" style={styles.button}>Generate BBCode</button>
+        {bbcode && (
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <label style={styles.label}>Generated BBCode:</label>
+              <button onClick={() => copyToClipboard(bbcode, (val) => handleChange('copied', val))} className="flex items-center gap-2 px-4 py-2 rounded text-sm hover:opacity-80 transition duration-150" style={styles.copyButton}>
+                {copied ? <><Check size={16} /> Copied!</> : <><Copy size={16} /> Copy</>}
+              </button>
+            </div>
+            <textarea value={bbcode} readOnly rows={20} className="border rounded px-4 py-2 w-full font-mono text-sm resize-none" style={styles.input} onClick={(e) => e.target.select()} />
+          </div>
+        )}
+      </div>
+  );
+}
+
+// --- 2. COVERT INCIDENT FORM (REFACTORED) ---
+function CovertIncidentForm({ lightMode, formData, setFormData, postUrl }) { // Added postUrl
+    const { 
+      date, sceneSupervisor, officersInvolved, arrestIncidentReports, 
+      summarizeDeployment, location, weaponUsed, dischargeReason, injuredParties, 
+      bbcode, copied 
+    } = formData;
+    
+    const styles = getStyles(lightMode);
+    const handleChange = (field, value) => setFormData({ [field]: value });
+
+    const formatMultiline = (text, prefix = '') => (text || '').split('\n').map(line => line.trim()).filter(line => line).join(prefix ? prefix + '\n' : '\n');
+
+    const generateBBCode = () => {
+        let code = '[lspdfooter][/lspdfooter]\n';
+        code += '[divbox=white]\n';
+        code += '[dblogo=150][/dblogo][aligntable=right,350,0,0,0,0,#FFFFFF][right][font=Arial][b]\n';
+        code += '[size=150]Los Santos Police Department[/size][/b]\n';
+        code += '[size=115]COVERT INCIDENT[/size]\n';
+        code += '[size=95]"TO PROTECT AND TO SERVE"[/size][/font][/right][/aligntable]\n';
+        code += '[hr]\n';
+        code += '[list=none][b][size=115]COVERT DEPLOYMENT DETAILS[/size][/b]\n';
+        code += '[list=none]\n';
+        code += '[b]Date:[/b] ' + (date || 'DD/MMM/YYYY') + '\n';
+        code += '[b]Scene Supervisor:[/b] ' + (sceneSupervisor || 'ANSWER') + '\n';
+        code += '[b]Officers Involved:[/b] ' + formatMultiline(officersInvolved, ' ') + '\n';
+        code += '[b]Arrest/Incident Reports:[/b] ' + formatMultiline(arrestIncidentReports, ' ') + '\n';
+        code += '[b]Summarize Deployment:[/b] ' + formatMultiline(summarizeDeployment, ' ') + '\n';
+        code += '[/list]\n\n\n';
+        code += '[b][size=115]EQUIPMENT DISCHARGE DETAILS[/size][/b]\n';
+        code += '[list=none]\n';
+        code += '[b]Location:[/b] ' + (location || 'ANSWER') + '\n';
+        code += '[b]Weapon Used:[/b] ' + (weaponUsed || 'ANSWER') + '\n';
+        code += '[b]Discharge Reason:[/b] ' + (dischargeReason || 'ANSWER') + '\n';
+        code += '[b]Injured Parties:[/b] ' + formatMultiline(injuredParties, ' ') + '\n';
+        code += '[/list]\n';
+        code += '[/divbox]\n';
+        code += '[lspdfooter][/lspdfooter]';
+        handleChange('bbcode', code);
+
+        copyToClipboard(code, (val) => handleChange('copied', val));
+        if (postUrl) {
+            window.open(postUrl, '_blank');
+        }
+    };
+
+    return (
+        <div className="space-y-6">
+            {/* Deployment Details */}
+            <div><label className="block mb-2" style={styles.label}>Date:</label><input type="text" value={date || ''} onChange={(e) => handleChange('date', e.target.value)} placeholder="DD/MMM/YYYY" className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+            <div><label className="block mb-2" style={styles.label}>Scene Supervisor:</label><input type="text" value={sceneSupervisor || ''} onChange={(e) => handleChange('sceneSupervisor', e.target.value)} className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+            <div><label className="block mb-2" style={styles.label}>Officers Involved (one per line):</label><textarea value={officersInvolved || ''} onChange={(e) => handleChange('officersInvolved', e.target.value)} rows={3} className="border rounded px-4 py-2 w-full resize-none" style={styles.input} /></div>
+            <div><label className="block mb-2" style={styles.label}>Arrest/Incident Reports (one per line):</label><textarea value={arrestIncidentReports || ''} onChange={(e) => handleChange('arrestIncidentReports', e.target.value)} rows={3} className="border rounded px-4 py-2 w-full resize-none" style={styles.input} /></div>
+            <div><label className="block mb-2" style={styles.label}>Summarize Deployment:</label><textarea value={summarizeDeployment || ''} onChange={(e) => handleChange('summarizeDeployment', e.target.value)} rows={5} className="border rounded px-4 py-2 w-full resize-none" style={styles.input} /></div>
+            <hr style={{ borderColor: lightMode ? '#e0e0e0' : '#2d2d2d' }} />
+
+            {/* Equipment Discharge Details */}
+            <h3 className="text-xl font-semibold mt-6" style={styles.label}>Equipment Discharge Details</h3>
+            <div><label className="block mb-2" style={styles.label}>Location:</label><input type="text" value={location || ''} onChange={(e) => handleChange('location', e.target.value)} className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+            <div><label className="block mb-2" style={styles.label}>Weapon Used:</label><input type="text" value={weaponUsed || ''} onChange={(e) => handleChange('weaponUsed', e.target.value)} className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+            <div><label className="block mb-2" style={styles.label}>Discharge Reason:</label><input type="text" value={dischargeReason || ''} onChange={(e) => handleChange('dischargeReason', e.target.value)} className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+            <div><label className="block mb-2" style={styles.label}>Injured Parties (one per line):</label><textarea value={injuredParties || ''} onChange={(e) => handleChange('injuredParties', e.target.value)} rows={3} className="border rounded px-4 py-2 w-full resize-none" style={styles.input} /></div>
+
+            <button onClick={generateBBCode} className="px-6 py-3 rounded font-medium w-full hover:opacity-80 transition duration-150" style={styles.button}>Generate BBCode</button>
+            {bbcode && (
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label style={styles.label}>Generated BBCode:</label>
+                  <button onClick={() => copyToClipboard(bbcode, (val) => handleChange('copied', val))} className="flex items-center gap-2 px-4 py-2 rounded text-sm hover:opacity-80 transition duration-150" style={styles.copyButton}>
+                    {copied ? <><Check size={16} /> Copied!</> : <><Copy size={16} /> Copy</>}
+                  </button>
+                </div>
+                <textarea value={bbcode} readOnly rows={20} className="border rounded px-4 py-2 w-full font-mono text-sm resize-none" style={styles.input} onClick={(e) => e.target.select()} />
+              </div>
+            )}
+        </div>
+    );
+}
+
+// --- 3. ADMISSIONS OF GUILT FORM (REFACTORED) ---
+function AdmissionsOfGuiltForm({ lightMode, formData, setFormData, postUrl }) { // Added postUrl
+    const {
+      date, suspectName, suspectPhone, writtenStatement, charges,
+      counselChoice, counselName, confessingPartyName, overseeingOfficerName,
+      proofImages, bbcode, copied
+    } = formData;
+    
+    const styles = getStyles(lightMode);
+    const handleChange = (field, value) => setFormData({ [field]: value });
+
+    const formatCharges = (text) => (text || '').split('\n').map(c => c.trim()).filter(c => c).map(c => `[*][b]${c}[/b]`).join('\n');
+
+    const generateBBCode = () => {
+        let code = '[lspdfooter][/lspdfooter]\n\n';
+        code += '[divbox=white]\n';
+        code += '[dblogo=150][/dblogo][aligntable=right,350,0,0,0,0,#FFFFFF][right][font=Arial][b]\n';
+        code += '[size=150]Los Santos Police Department[/size][/b]\n';
+        code += '[size=115]ADMISSION OF GUILT[/size]\n';
+        code += '[size=95]"TO PROTECT AND TO SERVE"[/size][/font][/right][/aligntable]\n';
+        code += '[hr]\n\n';
+        code += '[mod=Detective Bureau]Lying on this document, willfully or otherwise, will nullify the stipulations of this agreement allowing the charges of GM12 - Giving False Information to a Police Officer, GM14 - Obstruction of Justice, and GF24 - Perjury.[/mod]\n';
+        code += '[hr]\n\n';
+        code += '[list=none][b][size=115]SUSPECT DETAILS[/size][/b]\n';
+        code += '[list=none]\n';
+        code += '[b]Date:[/b] ' + (date || 'DD/MMM/YYYY') + '\n\n';
+        code += '[b]Full Name:[/b] ' + (suspectName || 'ANSWER') + '\n';
+        code += '[b]Phone Number:[/b] ' + (suspectPhone || 'ANSWER') + '\n';
+        code += '[/list]\n\n\n';
+        code += '[b][size=115]WRITTEN STATEMENT (MANDATORY)[/size][/b]\n';
+        code += '[spoil]\n\n' + (writtenStatement || 'STATEMENT HERE') + '\n\n[/spoil]\n\n\n';
+        code += '[b][size=115]ADMISSION & SIGNATURE[/size][/b]\n';
+        code += '[list=none]\n';
+        code += 'I, [b]' + ((confessingPartyName || '').toUpperCase() || 'FULL NAME') + '[/b], hereby acknowledge the action(s) without coercion, intimidation, or other threat of physical harm to my person, property, or moral character. I state my formal admission to the crimes committed and knowingly wave my 5th Amendment Right to remain silent. I understand the charge(s) fully as stated: \n\n';
+        code += '[list]\n' + formatCharges(charges) + '\n[/list]\n\n';
+        code += 'I plead no contest to these listed crimes(s) and acknowledge both Civil implications and Criminal detainment and/or fines as confirmed by my signature below:\n';
+        code += '[/list]\n\n\n';
+        code += '[hr]\n\n\n';
+        code += '[b]Legal Counsel Acknowledgment/Waiver [/b]\n\n';
+
+        if (counselChoice === 'present') {
+            code += '[cb] Legal Counsel Present:\n';
+            code += 'I had legal counsel present during the discussion and signing of this admission. All content and implications of this statement have been discussed and understood with my legal counsel\'s guidance.\n\n';
+            code += '[b]Counsel:[/b]\n';
+            code += '[font=cursive]' + ((counselName || '').toUpperCase() || 'FULL NAME') + '[/font]\nFname Lname\n\n';
+            code += '[cb] Waived Right to Legal Counsel:\n\n';
+        } else {
+            code += '[cb] Legal Counsel Present:\n\n';
+            code += '[cb] Waived Right to Legal Counsel:\n';
+            code += 'I have been informed of and understand my right to legal counsel but have voluntarily chosen to waive this right, proceeding without consultation.\n\n';
+        }
+
+        code += '[hr]\n\n';
+        code += '[b]Confessing Party:[/b]\n';
+        code += '[font=cursive]' + ((confessingPartyName || '').toUpperCase() || 'FULL NAME') + '[/font]\nFname Lname\n\n';
+        code += '[b]Overseeing Detective / Officer:[/b]\n';
+        code += '[font=cursive]' + ((overseeingOfficerName || '').toUpperCase() || 'FULL NAME') + '[/font]\nRank Fname Lname\n\n\n';
+        code += '[spoiler=(( Proof of Roleplay ))]\n' + (proofImages || 'IMAGES') + '\n[/spoiler]\n';
+        code += '[/list]\n\n';
+        code += '[hr]\n';
+        code += '[/divbox]\n\n';
+        code += '[lspdfooter][/lspdfooter]';
+        handleChange('bbcode', code);
+
+        copyToClipboard(code, (val) => handleChange('copied', val));
+        if (postUrl) {
+            window.open(postUrl, '_blank');
+        }
+    };
+
+    return (
+        <div className="space-y-6">
+            {/* Suspect Details */}
+            <h3 className="text-xl font-semibold border-b pb-2" style={styles.label}>Suspect Details</h3>
+            <div><label className="block mb-2" style={styles.label}>Date:</label><input type="text" value={date || ''} onChange={(e) => handleChange('date', e.target.value)} placeholder="DD/MMM/YYYY" className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+            <div><label className="block mb-2" style={styles.label}>Suspect Full Name:</label><input type="text" value={suspectName || ''} onChange={(e) => handleChange('suspectName', e.target.value)} className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+            <div><label className="block mb-2" style={styles.label}>Suspect Phone Number:</label><input type="text" value={suspectPhone || ''} onChange={(e) => handleChange('suspectPhone', e.target.value)} className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+            
+            <hr style={{ borderColor: lightMode ? '#e0e0e0' : '#2d2d2d' }} />
+
+            {/* Admission Details */}
+            <h3 className="text-xl font-semibold border-b pb-2" style={styles.label}>Admission & Statement</h3>
+            <div><label className="block mb-2" style={styles.label}>Written Statement (MANDATORY, goes in spoiler):</label><textarea value={writtenStatement || ''} onChange={(e) => handleChange('writtenStatement', e.target.value)} rows={6} className="border rounded px-4 py-2 w-full resize-none font-mono text-sm" style={styles.input} /></div>
+            <div><label className="block mb-2" style={styles.label}>Charges (one per line):</label><textarea value={charges || ''} onChange={(e) => handleChange('charges', e.target.value)} rows={4} className="border rounded px-4 py-2 w-full resize-none" style={styles.input} /></div>
+            
+            <hr style={{ borderColor: lightMode ? '#e0e0e0' : '#2d2d2d' }} />
+
+            {/* Legal Counsel & Signatures */}
+            <h3 className="text-xl font-semibold border-b pb-2" style={styles.label}>Legal Counsel & Signatures</h3>
+            <div className="flex gap-6 items-center">
+                <label className="flex items-center gap-2" style={styles.label}><input type="radio" value="present" checked={counselChoice === 'present'} onChange={(e) => handleChange('counselChoice', e.target.value)} /> Counsel Present</label>
+                <label className="flex items-center gap-2" style={styles.label}><input type="radio" value="waived" checked={counselChoice === 'waived'} onChange={(e) => handleChange('counselChoice', e.target.value)} /> Waived Counsel</label>
+            </div>
+            {counselChoice === 'present' && (
+                <div><label className="block mb-2" style={styles.label}>Legal Counsel Name:</label><input type="text" value={counselName || ''} onChange={(e) => handleChange('counselName', e.target.value)} className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+            )}
+            <div><label className="block mb-2" style={styles.label}>Confessing Party Full Name (for signature):</label><input type="text" value={confessingPartyName || ''} onChange={(e) => handleChange('confessingPartyName', e.target.value)} className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+            <div><label className="block mb-2" style={styles.label}>Overseeing Detective/Officer Name (for signature):</label><input type="text" value={overseeingOfficerName || ''} onChange={(e) => handleChange('overseeingOfficerName', e.target.value)} className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+            <div><label className="block mb-2" style={styles.label}>Proof of Roleplay Images (BBCode):</label>
+                <textarea 
+                    value={proofImages || ''} 
+                    onChange={(e) => handleChange('proofImages', e.target.value)} 
+                    rows={4} 
+                    className="border rounded px-4 py-2 w-full resize-none font-mono text-sm" 
+                    style={styles.input} 
+                />
+            </div>
+
+            <button onClick={generateBBCode} className="px-6 py-3 rounded font-medium w-full hover:opacity-80 transition duration-150" style={styles.button}>Generate BBCode</button>
+            {bbcode && (
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label style={styles.label}>Generated BBCode:</label>
+                  <button onClick={() => copyToClipboard(bbcode, (val) => handleChange('copied', val))} className="flex items-center gap-2 px-4 py-2 rounded text-sm hover:opacity-80 transition duration-150" style={styles.copyButton}>
+                    {copied ? <><Check size={16} /> Copied!</> : <><Copy size={16} /> Copy</>}
+                  </button>
+                </div>
+                <textarea value={bbcode} readOnly rows={20} className="border rounded px-4 py-2 w-full font-mono text-sm resize-none" style={styles.input} onClick={(e) => e.target.select()} />
+              </div>
+            )}
+        </div>
+    );
+}
+
+// --- 4. TRACE LOG FORM (REFACTORED) ---
+function TraceLogForm({ lightMode, formData, setFormData, postUrl }) { // Added postUrl
+    const reasons = ['Serious Felony', 'Elusive Individual', 'Evasion with a Felony', 'Two Serious Misdemeanour', 'Individual on an active Casefile', 'Civilian in Mortal Danger', 'Deviation Approved'];
+    const { date, fullName, phoneNumber, selectedReasons, bbcode, copied } = formData;
+    const styles = getStyles(lightMode);
+    const handleChange = (field, value) => setFormData({ [field]: value });
+
+    const toggleReason = (reason) => {
+        const currentReasons = selectedReasons || [];
+        const newReasons = currentReasons.includes(reason) 
+            ? currentReasons.filter(r => r !== reason) 
+            : [...currentReasons, reason];
+        handleChange('selectedReasons', newReasons);
+    };
+
+    const generateBBCode = () => {
+        let code = '[lspdfooter][/lspdfooter]\n';
+        code += '[divbox=white]\n';
+        code += '[dblogo=150][/dblogo][aligntable=right,350,0,0,0,0,#FFFFFF][right][font=Arial][b]\n';
+        code += '[size=150]Los Santos Police Department[/size][/b]\n';
+        code += '[size=115]TRACE LOG[/size]\n';
+        code += '[size=95]"TO PROTECT AND TO SERVE"[/size][/font][/right][/aligntable]\n';
+        code += '[hr]\n';
+        code += '[list=none][b][size=115]TRACE DETAILS[/size][/b]\n';
+        code += '[list=none]\n';
+        code += '[b]Date[/b]: ' + (date || 'DD/MMM/YYYY') + '\n\n';
+        code += '[b]Full Name[/b]: ' + (fullName || 'ANSWER') + '\n';
+        code += '[b]Phone Number[/b]: ' + (phoneNumber || 'ANSWER') + '\n';
+        code += '[/list]\n\n\n';
+        code += '[b][size=115]TRACE REASON[/size][/b]\n';
+        code += '[list=none]\n';
+
+        reasons.forEach(reason => {
+            code += `[cb] ${reason}\n`;
+        });
+
+        code += '[/list]\n';
+        code += '[/divbox]\n';
+        code += '[lspdfooter][/lspdfooter]';
+        handleChange('bbcode', code);
+        
+        copyToClipboard(code, (val) => handleChange('copied', val));
+        if (postUrl) {
+            window.open(postUrl, '_blank');
+        }
+    };
+
+    return (
+        <div className="space-y-6">
+            {/* Trace Details */}
+            <div><label className="block mb-2" style={styles.label}>Date:</label><input type="text" value={date || ''} onChange={(e) => handleChange('date', e.target.value)} placeholder="DD/MMM/YYYY" className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+            <div><label className="block mb-2" style={styles.label}>Full Name (Traced Individual):</label><input type="text" value={fullName || ''} onChange={(e) => handleChange('fullName', e.target.value)} className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+            <div><label className="block mb-2" style={styles.label}>Phone Number:</label><input type="text" value={phoneNumber || ''} onChange={(e) => handleChange('phoneNumber', e.target.value)} className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+            
+            <hr style={{ borderColor: lightMode ? '#e0e0e0' : '#2d2d2d' }} />
+
+            {/* Trace Reasons */}
+            <h3 className="text-xl font-semibold border-b pb-2" style={styles.label}>Select Trace Reasons (UI Only)</h3>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {reasons.map(reason => (
+                    <div key={reason} className="flex items-center gap-2 p-2 rounded cursor-pointer" 
+                         style={{ backgroundColor: (selectedReasons || []).includes(reason) ? (lightMode ? '#e0f2fe' : '#1e3a8a') : 'transparent' }}
+                         onClick={() => toggleReason(reason)}>
+                        <input type="checkbox" readOnly checked={(selectedReasons || []).includes(reason)} className="w-4 h-4" />
+                        <span style={styles.label}>{reason}</span>
+                    </div>
+                ))}
+            </div>
+
+            <button onClick={generateBBCode} className="px-6 py-3 rounded font-medium w-full hover:opacity-80 transition duration-150" style={styles.button}>Generate BBCode</button>
+            {bbcode && (
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label style={styles.label}>Generated BBCode:</label>
+                  <button onClick={() => copyToClipboard(bbcode, (val) => handleChange('copied', val))} className="flex items-center gap-2 px-4 py-2 rounded text-sm hover:opacity-80 transition duration-150" style={styles.copyButton}>
+                    {copied ? <><Check size={16} /> Copied!</> : <><Copy size={16} /> Copy</>}
+                  </button>
+                </div>
+                <textarea value={bbcode} readOnly rows={20} className="border rounded px-4 py-2 w-full font-mono text-sm resize-none" style={styles.input} onClick={(e) => e.target.select()} />
+              </div>
+            )}
+        </div>
+    );
+}
+
+// --- 5. OPERATION LOGS FORM (REFACTORED) ---
+function OperationLogsForm({ lightMode, formData, setFormData, postUrl }) { // Added postUrl
+    const {
+      leadDetective, leadSwatOperative, assistingOfficers, operationType,
+      dateTime, suspectsApprehended, assetsSeized, bbcode, copied
+    } = formData;
+
+    const styles = getStyles(lightMode);
+    const handleChange = (field, value) => setFormData({ [field]: value });
+    
+    const formatMultiline = (text, defaultText = 'None') => 
+        (text || '').split('\n').map(line => line.trim()).filter(line => line).join(', ') || defaultText;
+
+    const generateBBCode = () => {
+        let code = '[lspdfooter][/lspdfooter]\n';
+        code += '[divbox=white]\n\n';
+        code += '[DBlogo=150][/DBlogo][aligntable=right,350,0,0,0,0,#FFFFFF][right][font=Arial][b][size=150]Los Santos Police Department[/size][/b]\n';
+        code += '[size=95]"TO PROTECT AND TO SERVE"[/size][/font][/right][/aligntable]\n\n';
+        code += '[hr]\n';
+        code += '[lspdsubtitle]REPORT DETAILS[/lspdsubtitle]\n';
+        code += '[divbox=white]\n';
+        code += '[b]Lead Detective:[/b] ' + (leadDetective || 'Rank + Name') + '\n';
+        code += '[b]Lead SWAT Operative (if applicable):[/b] ' + (leadSwatOperative || 'Rank + Name') + '\n';
+        code += '[b]Assisting DB Officers (if applicable):[/b] ' + formatMultiline(assistingOfficers, 'None') + '\n';
+        code += '[b]Type of Operation:[/b] ' + operationType + '\n';
+        code += '[b]Date & Time:[/b] ' + (dateTime || 'DD/MMM/YYYY XX:XX') + ' [ooc] UTC [/ooc]\n';
+        code += '[/divbox]\n\n';
+        code += '[lspdsubtitle]OPERATION RESULTS[/lspdsubtitle]\n';
+        code += '[divbox=white][b]Suspect(s) Apprenhended:[/b] ' + formatMultiline(suspectsApprehended, 'None') + '\n';
+        code += '[b]Assets Seized (if applicable, intended for raids):[/b] ' + formatMultiline(assetsSeized, 'None') + '\n\n';
+        code += '[/divbox]\n';
+        code += '[/divbox][lspdfooter][/lspdfooter]';
+        handleChange('bbcode', code);
+
+        copyToClipboard(code, (val) => handleChange('copied', val));
+        if (postUrl) {
+            window.open(postUrl, '_blank');
+        }
+    };
+
+    return (
+        <div className="space-y-6">
+            {/* Report Details */}
+            <h3 className="text-xl font-semibold border-b pb-2" style={styles.label}>Report Details</h3>
+            <div><label className="block mb-2" style={styles.label}>Lead Detective (Rank + Name):</label><input type="text" value={leadDetective || ''} onChange={(e) => handleChange('leadDetective', e.target.value)} className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+            <div><label className="block mb-2" style={styles.label}>Lead SWAT Operative (if applicable):</label><input type="text" value={leadSwatOperative || ''} onChange={(e) => handleChange('leadSwatOperative', e.target.value)} className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+            <div><label className="block mb-2" style={styles.label}>Assisting DB Officers (one per line):</label><textarea value={assistingOfficers || ''} onChange={(e) => handleChange('assistingOfficers', e.target.value)} rows={3} className="border rounded px-4 py-2 w-full resize-none" style={styles.input} /></div>
+            <div>
+                <label className="block mb-2" style={styles.label}>Type of Operation:</label>
+                <select value={operationType} onChange={(e) => handleChange('operationType', e.target.value)} className="border rounded px-4 py-2 w-full" style={styles.input}>
+                    <option>Raid</option>
+                    <option>Warrant Hunt</option>
+                    <option>Joint Operations</option>
+                    <option>Traffic Stop</option>
+                    <option>Other</option>
+                </select>
+            </div>
+            <div><label className="block mb-2" style={styles.label}>Date & Time (DD/MMM/YYYY XX:XX):</label><input type="text" value={dateTime || ''} onChange={(e) => handleChange('dateTime', e.target.value)} className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+            <hr style={{ borderColor: lightMode ? '#e0e0e0' : '#2d2d2d' }} />
+
+            {/* Operation Results */}
+            <h3 className="text-xl font-semibold border-b pb-2" style={styles.label}>Operation Results</h3>
+            <div><label className="block mb-2" style={styles.label}>Suspect(s) Apprehended (one per line):</label><textarea value={suspectsApprehended || ''} onChange={(e) => handleChange('suspectsApprehended', e.target.value)} rows={3} className="border rounded px-4 py-2 w-full resize-none" style={styles.input} /></div>
+            <div><label className="block mb-2" style={styles.label}>Assets Seized (one per line):</label><textarea value={assetsSeized || ''} onChange={(e) => handleChange('assetsSeized', e.target.value)} rows={4} className="border rounded px-4 py-2 w-full resize-none" style={styles.input} /></div>
+            
+            <button onClick={generateBBCode} className="px-6 py-3 rounded font-medium w-full hover:opacity-80 transition duration-150" style={styles.button}>Generate BBCode</button>
+            {bbcode && (
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label style={styles.label}>Generated BBCode:</label>
+                  <button onClick={() => copyToClipboard(bbcode, (val) => handleChange('copied', val))} className="flex items-center gap-2 px-4 py-2 rounded text-sm hover:opacity-80 transition duration-150" style={styles.copyButton}>
+                    {copied ? <><Check size={16} /> Copied!</> : <><Copy size={16} /> Copy</>}
+                  </button>
+                </div>
+                <textarea value={bbcode} readOnly rows={20} className="border rounded px-4 py-2 w-full font-mono text-sm resize-none" style={styles.input} onClick={(e) => e.target.select()} />
+              </div>
+            )}
+        </div>
+    );
+}
+
+// --- 6. MONETARY RECOVERY FORM (REFACTORED) ---
+function MonetaryRecoveryForm({ lightMode, formData, setFormData, postUrl }) { // Added postUrl
+  const {
+    date, personPossession, possessionPhone, othersInvolved,
+    amount, type, source, narrative, bbcode, copied
+  } = formData;
+
+  const styles = getStyles(lightMode);
+  const handleChange = (field, value) => setFormData({ [field]: value });
+
+  const generateBBCode = () => {
+    let code = '[lspdfooter][/lspdfooter]\n\n';
+    code += '[divbox=white]\n';
+    code += '[dblogo=150][/dblogo][aligntable=right,350,0,0,0,0,#FFFFFF][right][font=Arial][b]\n';
+    code += '[size=150]Los Santos Police Department[/size][/b]\n';
+    code += '[size=115]MONETARY RECOVERY REPORT[/size]\n';
+    code += '[size=95]"TO PROTECT AND TO SERVE"[/size][/font][/right][/aligntable]\n';
+    code += '[hr]\n';
+    code += '[list=none][b][size=115]RECOVERY DETAILS[/size][/b]\n';
+    code += '[list=none]\n';
+    code += '[b]Date:[/b] ' + (date || '') + '\n\n';
+    code += '[b]Person in Possession:[/b] ' + (personPossession || '') + ' - ' + (possessionPhone || '') + '\n';
+    code += '[b]Others Involved:[/b] [list]\n';
+    (othersInvolved || '').split('\n').forEach(person => {
+      if (person.trim()) code += '[*]' + person.trim() + '\n';
+    });
+    code += '[/list]\n';
+    code += '[/list]\n\n\n';
+    code += '[b][size=115]MONETARY DETAILS[/size][/b]\n';
+    code += '[list=none]\n';
+    code += '[b]Amount:[/b] [color=green]$' + (amount || '0') + '[/color]\n';
+    code += '[b]Type:[/b] ' + (type || '') + '\n';
+    code += '[b]Source:[/b] ' + (source || '') + '\n';
+    code += '[/list]\n\n\n';
+    code += '[b][size=115]RECOVERY NARRATIVE[/size][/b]\n';
+    code += '[list=none]\n';
+    code += (narrative || '') + '\n\n';
+    code += '[/divbox]\n\n';
+    code += '[lspdfooter][/lspdfooter]';
+    handleChange('bbcode', code);
+
+    copyToClipboard(code, (val) => handleChange('copied', val));
+    if (postUrl) {
+        window.open(postUrl, '_blank');
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div><label className="block mb-2" style={styles.label}>Date:</label><input type="text" value={date || ''} onChange={(e) => handleChange('date', e.target.value)} placeholder="DD/MMM/YYYY" className="border rounded px-4 py-2 w-full focus:ring-gray-600 focus:border-gray-600 transition" style={styles.input} /></div>
+      <div><label className="block mb-2" style={styles.label}>Person in Possession:</label><input type="text" value={personPossession || ''} onChange={(e) => handleChange('personPossession', e.target.value)} placeholder="Fname Lname" className="border rounded px-4 py-2 w-full focus:ring-gray-600 focus:border-gray-600 transition" style={styles.input} /></div>
+      <div><label className="block mb-2" style={styles.label}>Possession Phone:</label><input type="text" value={possessionPhone || ''} onChange={(e) => handleChange('possessionPhone', e.target.value)} className="border rounded px-4 py-2 w-full focus:ring-gray-600 focus:border-gray-600 transition" style={styles.input} /></div>
+      <div><label className="block mb-2" style={styles.label}>Others Involved (one per line):</label><textarea value={othersInvolved || ''} onChange={(e) => handleChange('othersInvolved', e.target.value)} placeholder="Fname Lname - PHONE" rows={4} className="border rounded px-4 py-2 w-full focus:ring-gray-600 focus:border-gray-600 transition resize-none" style={styles.input} /></div>
+      <hr style={{ borderColor: lightMode ? '#e0e0e0' : '#2d2d2d' }} />
+      <div><label className="block mb-2" style={styles.label}>Amount:</label><input type="text" value={amount || ''} onChange={(e) => handleChange('amount', e.target.value)} placeholder="0000" className="border rounded px-4 py-2 w-full focus:ring-gray-600 focus:border-gray-600 transition" style={styles.input} /></div>
+      <div><label className="block mb-2" style={styles.label}>Type:</label><input type="text" value={type || ''} onChange={(e) => handleChange('type', e.target.value)} placeholder="Packed Cash, etc." className="border rounded px-4 py-2 w-full focus:ring-gray-600 focus:border-gray-600 transition" style={styles.input} /></div>
+      <div><label className="block mb-2" style={styles.label}>Source:</label><input type="text" value={source || ''} onChange={(e) => handleChange('source', e.target.value)} placeholder="Store, Bank, Suspect, etc." className="border rounded px-4 py-2 w-full focus:ring-gray-600 focus:border-gray-600 transition" style={styles.input} /></div>
+      <div><label className="block mb-2" style={styles.label}>Recovery Narrative:</label><textarea value={narrative || ''} onChange={(e) => handleChange('narrative', e.target.value)} rows={6} className="border rounded px-4 py-2 w-full focus:ring-gray-600 focus:border-gray-600 transition resize-none" style={styles.input} /></div>
+      
+      <button onClick={generateBBCode} className="px-6 py-3 rounded font-medium w-full hover:opacity-80 transition duration-150" style={styles.button}>Generate BBCode</button>
+      {bbcode && (
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <label style={styles.label}>Generated BBCode:</label>
+            <button onClick={() => copyToClipboard(bbcode, (val) => handleChange('copied', val))} className="flex items-center gap-2 px-4 py-2 rounded text-sm hover:opacity-80 transition duration-150" style={styles.copyButton}>
+              {copied ? <><Check size={16} /> Copied!</> : <><Copy size={16} /> Copy</>}
+            </button>
+          </div>
+          <textarea value={bbcode} readOnly rows={20} className="border rounded px-4 py-2 w-full font-mono text-sm resize-none" style={styles.input} onClick={(e) => e.target.select()} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// --- 7. FIREARMS FORM (REFACTORED) ---
+function FirearmsForm({ lightMode, formData, setFormData, postUrl }) { // Added postUrl
+  const {
+    headerType, dateTime, officers, narrative, location, informedTime, weaponType,
+    isIllegal, ammunition, modifications, serialNumber, serialOOC, registeredOwner,
+    ownerPhone, source, recentlyUsed, personPossession, possessionPhone, weaponOutcome,
+    bbcode, copied
+  } = formData;
+
+  const styles = getStyles(lightMode);
+
+  // --- NEW WEAPON DATA (FROM USER) ---
+  const weaponData = {
+    // Pistols (Legal)
+    'Combat Pistol': { img: 'https://vignette.wikia.nocookie.net/gtawiki/images/5/58/CombatPistol-GTAV-SocialClub.png', size: '200,150', ammo: '9mm Rounds', isIllegal: false },
+    'Heavy Pistol': { img: 'https://vignette.wikia.nocookie.net/gtawiki/images/9/9b/HeavyPistol-GTAV-SocialClub.png', size: '200,150', ammo: '9mm Rounds', isIllegal: false },
+    'Pistol': { img: 'https://vignette.wikia.nocookie.net/gtawiki/images/a/a5/Pistol-GTAV-SocialClub.png', size: '200,150', ammo: '9mm Rounds', isIllegal: false },
+    'Pistol .50': { img: 'https://vignette.wikia.nocookie.net/gtawiki/images/c/cf/Pistol50-GTAV-SocialClub.png', size: '200,150', ammo: '.50 AE Rounds', isIllegal: false },
+    'SNS Pistol': { img: 'https://vignette.wikia.nocookie.net/gtawiki/images/f/f5/SNSPistol-GTAV-SocialClub.png', size: '200,150', ammo: '.45 ACP Rounds', isIllegal: false },
+    'SNS Pistol Mk II': { img: 'https://i.imgur.com/3Pjplzi.png', size: '200,150', ammo: '.45 ACP Rounds', isIllegal: false },
+    'Vintage Pistol': { img: 'https://i.imgur.com/KUoJkgD.png', size: '200,150', ammo: '9mm Rounds', isIllegal: false },
+    'WM 29 Pistol': { img: 'https://i.imgur.com/emPlOT2.png', size: '200,150', ammo: '9mm Rounds', isIllegal: false },
+    // Pistols (Illegal)
+    'AP Pistol': { img: 'https://i.imgur.com/nnLhjwO.png', size: '250,150', ammo: '9mm Rounds', isIllegal: true },
+    'Ceramic Pistol': { img: 'https://i.imgur.com/JKT9WpR.png', size: '250,150', ammo: '9mm Rounds', isIllegal: true },
+    // Revolvers (Legal)
+    'Double-Action Revolver': { img: 'https://i.imgur.com/rLQ0Kzj.png', size: '250,125', ammo: '.36 Revolver Rounds', isIllegal: false },
+    'Heavy Revolver': { img: 'https://i.imgur.com/BGdnPEz.png', size: '250,125', ammo: '.44 Magnum Rounds', isIllegal: false },
+    'Navy Revolver': { img: 'https://i.imgur.com/ka9ZTj2.png', size: '250,125', ammo: '.36 Revolver Rounds', isIllegal: false },
+    'Heavy Revolver Mk II': { img: 'https://static.wikia.nocookie.net/gtawiki/images/6/6c/HeavyRevolverMkII-GTAO-SocialClub.png', size: '250,125', ammo: '.44 Magnum', isIllegal: false },
+    // Shotguns (Legal)
+    'Pump Shotgun': { img: 'https://vignette.wikia.nocookie.net/gtawiki/images/2/29/PumpShotgun-GTAV-SocialClub.png', size: '300,75', ammo: '12-Gauge Rounds', isIllegal: false },
+    'Pump Shotgun Mk II': { img: 'https://i.imgur.com/pKyz77S.png', size: '300,75', ammo: '12-Gauge Rounds', isIllegal: false },
+    // Shotguns (Illegal)
+    'Double Barrel Shotgun': { img: 'https://i.imgur.com/pyryMxz.png', size: '300,100', ammo: '12-Gauge Rounds', isIllegal: true },
+    'Musket': { img: 'https://i.imgur.com/BAmtoxv.png', size: '300,100', ammo: 'Paper Cartridge', isIllegal: true },
+    'Sawed-Off Shotgun': { img: 'https://vignette.wikia.nocookie.net/gtawiki/images/1/1f/SawedOffShotgun-GTAV-SocialClub.png', size: '300,100', ammo: '12-Gauge Rounds', isIllegal: true },
+    // Assault Rifles (Illegal)
+    'Advanced Rifle': { img: 'https://i.imgur.com/kqTWcu1.png', size: '300,100', ammo: '5.56mm Rounds', isIllegal: true },
+    'Assault Rifle': { img: 'https://vignette.wikia.nocookie.net/gtawiki/images/a/ae/AssaultRifle-GTAV-SocialClub.png', size: '300,100', ammo: '7.62mm Rounds', isIllegal: true },
+    'Assault Rifle Mk II': { img: 'https://i.imgur.com/SfEoz4L.png', size: '300,100', ammo: '7.62mm Rounds', isIllegal: true },
+    'Battle Rifle': { img: 'https://i.imgur.com/y2WncDY.png', size: '300,100', ammo: '7.62mm Rounds', isIllegal: true },
+    'Bullpup Rifle': { img: 'https://i.imgur.com/SQ8eXfu.png', size: '300,100', ammo: '5.56mm Rounds', isIllegal: true },
+    'Bullpup Rifle Mk II': { img: 'https://i.imgur.com/ZnmzEmQ.png', size: '300,100', ammo: '5.56mm Rounds', isIllegal: true },
+    'Carbine Rifle': { img: 'https://vignette.wikia.nocookie.net/gtawiki/images/1/1d/CarbineRifle-GTAV-SocialClub.png', size: '300,100', ammo: '5.56mm Rounds', isIllegal: true },
+    'Carbine Rifle Mk II': { img: 'https://i.imgur.com/5kvo0h0.png', size: '300,100', ammo: '5.56mm Rounds', isIllegal: true },
+    'Compact Rifle': { img: 'https://i.imgur.com/mI8fF1f.png', size: '200,150', ammo: '5.56mm Rounds', isIllegal: true },
+    'Heavy Rifle': { img: 'https://i.imgur.com/rLkH3LA.png', size: '300,100', ammo: '7.62mm Rounds', isIllegal: true },
+    'Service Carbine': { img: 'https://i.imgur.com/ZhBtUFX.png', size: '300,100', ammo: '7.62mm Rounds', isIllegal: true },
+    'Special Carbine': { img: 'https://i.imgur.com/35xB3Le.png', size: '300,100', ammo: '7.62mm Rounds', isIllegal: true },
+    'Special Carbine Mk II': { img: 'https://i.imgur.com/la0b5wZ.png', size: '300,100', ammo: '7.62mm Rounds', isIllegal: true },
+    // Sniper Rifles (Illegal)
+    'Sniper Rifle': { img: 'https://i.imgur.com/7CptBH9.png', size: '300,100', ammo: '7.62mm Rounds', isIllegal: true },
+    'Heavy Sniper Rifle': { img: 'https://i.imgur.com/HU0Zd2c.png', size: '300,100', ammo: '7.62mm Rounds', isIllegal: true },
+    'Heavy Sniper Rifle Mk II': { img: 'https://i.imgur.com/rtHBJQ7.png', size: '300,100', ammo: '7.62mm Rounds', isIllegal: true },
+    // Machine Guns (Illegal)
+    'Combat MG': { img: 'https://i.imgur.com/jxLdzDm.png', size: '300,100', ammo: '7.62mm Rounds', isIllegal: true },
+    'Combat MG Mk II': { img: 'https://i.imgur.com/sRFnj6f.png', size: '300,100', ammo: '7.62mm Rounds', isIllegal: true },
+    'Gusenberg Sweeper': { img: 'https://i.imgur.com/WXlM2C6.png', size: '300,100', ammo: '.45 ACP Rounds', isIllegal: true },
+    'MG': { img: 'https://i.imgur.com/tDJ574U.png', size: '300,100', ammo: '7.62mm Rounds', isIllegal: true },
+    // SMGs (Illegal)
+    'Assault SMG': { img: 'https://i.imgur.com/sDC4C44.png', size: '300,100', ammo: '9mm Rounds', isIllegal: true },
+    'Combat PDW': { img: 'https://i.imgur.com/Q363D2Z.png', size: '300,100', ammo: '9mm Rounds', isIllegal: true },
+    'Machine Pistol': { img: 'https://vignette.wikia.nocookie.net/es.gta/images/5/5d/PistolaAmetralladoraGTAV.png', size: '250,150', ammo: '9mm Rounds', isIllegal: true },
+    'Micro SMG': { img: 'https://vignette.wikia.nocookie.net/gtawiki/images/b/b7/MicroSMG-GTAV-beta.png', size: '200,150', ammo: '.45 ACP Rounds', isIllegal: true },
+    'Mini SMG': { img: 'https://vignette.wikia.nocookie.net/gtawiki/images/f/f5/MiniSMG-GTAO-SocialClub.png/', size: '200,125', ammo: '9mm Rounds', isIllegal: true },
+    'SMG': { img: 'https://vignette.wikia.nocookie.net/gtawiki/images/e/ef/SMG-GTAV-SocialClub.png', size: '300,100', ammo: '9mm Rounds', isIllegal: true },
+    'SMG Mk II': { img: 'https://i.imgur.com/VB7HxdS.png', size: '200,125', ammo: '9mm Rounds', isIllegal: true },
+    'Tactical SMG': { img: 'https://i.imgur.com/Tw3TNv7.png', size: '200,125', ammo: '.45 ACP Rounds', isIllegal: true },
+  };
+  
+  // Get data for the currently selected weapon, or default to the first
+  const currentWeapon = weaponData[weaponType] || weaponData[Object.keys(weaponData)[0]];
+
+  // --- NEW HANDLER ---
+  // This now handles weapon selection and auto-sets the illegal status
+  const handleWeaponChange = (e) => {
+    const newWeaponType = e.target.value;
+    const newWeaponData = weaponData[newWeaponType];
+    
+    // Update both the weapon type and its illegal status
+    setFormData({ 
+      weaponType: newWeaponType,
+      isIllegal: newWeaponData.isIllegal 
+    });
+  };
+
+  // Standard handler for all other form fields
+  const handleChange = (field, value) => setFormData({ [field]: value });
+
+  const generateBBCode = () => {
+    let code = '';
+    // --- Header Generation ---
+    if (headerType === 'situation') {
+      code += '[img]https://i.imgur.com/kiIHU9p.png[/img]\n\n[divbox=white][list=none]\n[b]Date & Time:[/b] ' + (dateTime || 'DD/MMM/YYYY HH:MM') + '\n\n[b]Officers Involved:[/b] [list]\n';
+      (officers || '').split('\n').forEach(o => { if (o.trim()) code += '[*]' + o.trim() + '\n'; });
+      code += '[/list]\n[b]Narrative:[/b] ' + (narrative || 'Here') + '\n[/divbox]\n\n';
+    } else {
+      code += '[img]https://i.imgur.com/QDi68PU.png[/img]\n\n[divbox=white][list=none]\n[b]Date & Time:[/b] ' + (dateTime || 'DD/MMM/YYYY HH:MM') + '\n\n[b]Informed Location:[/b] ' + (location || 'LOCATION') + '\n[b]Informed Time:[/b] ' + (informedTime || '##') + ' Minutes\n\n[b]Officers Involved:[/b] [list]\n';
+      (officers || '').split('\n').forEach(o => { if (o.trim()) code += '[*]' + o.trim() + '\n'; });
+      code += '[/list]\n[b]Narrative:[/b] ' + (narrative || 'Here') + '\n[/divbox]\n\n';
+    }
+    
+    // --- Weapon Body Generation ---
+    code += '[lspdsubtitle][b][size=115]' + weaponType + '[/size][/b][/lspdsubtitle]\n';
+    code += '[divbox=white][float=right][divbox=white][fimg=' + currentWeapon.size + ']' + currentWeapon.img + '[/fimg][/divbox][/float]\n';
+    code += '[list=none]\n';
+    
+    // --- AMMO FIX ---
+    // Check if user entered ammo. If so, append the ammo type. If not, use placeholder.
+    const ammoOutput = ammunition ? `${ammunition} / ${currentWeapon.ammo}` : `x# / ${currentWeapon.ammo}`;
+    code += `[b]Ammunition (${weaponType}):[/b] ${ammoOutput}\n`;
+    // --- END FIX ---
+    
+    code += '[b]Modifications:[/b] ' + (modifications || 'None') + '\n';
+    
+    if (!isIllegal) {
+      // Legal Weapon BBCode
+      code += '[b]Serial Number:[/b] ' + (serialNumber || 'SERIALNUMBER') + '\n';
+      if (registeredOwner || ownerPhone) {
+        code += '[b]Registered Owner:[/b] ' + (registeredOwner || 'FNAME LNAME') + ' - ' + (ownerPhone || 'PHONE') + '\n';
+      }
+      if (source) {
+        code += '[b]Source / Store:[/b] ' + source + '\n';
+      }
+      code += '[b]Recently used:[/b] ' + recentlyUsed + '\n';
+      code += '[b]Person in Possession:[/b] [url=search.php?keywords=' + ((personPossession || '').replace(/ /g, '+') || 'FNAME+LNAME') + ']' + (personPossession || 'FNAME LNAME') + '[/url] - ' + (possessionPhone || 'PHONE') + '\n';
+      code += '[b]Weapon Outcome:[/b] ' + (weaponOutcome || 'Returned to Owner / Destroyed : REASON') + '\n';
+    } else {
+      // Illegal Weapon BBCode
+      code += '[b]Serial Number:[/b] Removed [ooc]' + (serialOOC || 'SERIAL# | OWNER | SOURCE | MM/DD/YY HH:MM') + '[/ooc]\n';
+      code += '[b]Recently used:[/b] ' + recentlyUsed + '\n';
+      code += '[b]Person in Possession:[/b] [url=search.php?keywords=' + ((personPossession || '').replace(/ /g, '+') || 'FNAME+LNAME') + ']' + (personPossession || 'FNAME LNAME') + '[/url] - ' + (possessionPhone || 'PHONE') + '\n';
+      code += '[b]Weapon Outcome:[/b] Destroyed : Illegal Weapon\n';
+    }
+    
+    code += '[/list][hr]-----------You can remove any lines that offer no or unknown information.-----------[/hr][/divbox]';
+    handleChange('bbcode', code);
+    
+    copyToClipboard(code, (val) => handleChange('copied', val));
+    if (postUrl) {
+        window.open(postUrl, '_blank');
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Header Type */}
+      <div>
+        <label className="block mb-2" style={styles.label}>Header Type:</label>
+        <select value={headerType} onChange={(e) => handleChange('headerType', e.target.value)} className="border rounded px-4 py-2 w-full focus:ring-gray-600 focus:border-gray-600 transition" style={styles.input}>
+          <option value="situation">Situation Details</option>
+          <option value="shipment">Shipment Details</option>
+        </select>
+      </div>
+      
+      {/* Common Header Fields */}
+      <div><label className="block mb-2" style={styles.label}>Date & Time:</label><input type="text" value={dateTime || ''} onChange={(e) => handleChange('dateTime', e.target.value)} placeholder="DD/MMM/YYYY HH:MM" className="border rounded px-4 py-2 w-full focus:ring-gray-600 focus:border-gray-600 transition" style={styles.input} /></div>
+      
+      {/* Shipment-Only Fields */}
+      {headerType === 'shipment' && (
+        <>
+          <div><label className="block mb-2" style={styles.label}>Informed Location:</label><input type="text" value={location || ''} onChange={(e) => handleChange('location', e.target.value)} className="border rounded px-4 py-2 w-full focus:ring-gray-600 focus:border-gray-600 transition" style={styles.input} /></div>
+          <div><label className="block mb-2" style={styles.label}>Informed Time (Minutes):</label><input type="text" value={informedTime || ''} onChange={(e) => handleChange('informedTime', e.target.value)} className="border rounded px-4 py-2 w-full focus:ring-gray-600 focus:border-gray-600 transition" style={styles.input} /></div>
+        </>
+      )}
+      
+      {/* Common Header Fields */}
+      <div><label className="block mb-2" style={styles.label}>Officers Involved (one per line):</label><textarea value={officers || ''} onChange={(e) => handleChange('officers', e.target.value)} placeholder="Rank Fname Lname" rows={4} className="border rounded px-4 py-2 w-full focus:ring-gray-600 focus:border-gray-600 transition resize-none" style={styles.input} /></div>
+      <div><label className="block mb-2" style={styles.label}>Narrative:</label><textarea value={narrative || ''} onChange={(e) => handleChange('narrative', e.target.value)} rows={4} className="border rounded px-4 py-2 w-full focus:ring-gray-600 focus:border-gray-600 transition resize-none" style={styles.input} /></div>
+      
+      <hr style={{ borderColor: lightMode ? '#e0e0e0' : '#2d2d2d' }} />
+      
+      {/* --- Weapon Details --- */}
+      <h3 className="text-xl font-semibold border-b pb-2" style={styles.label}>Weapon Details</h3>
+      
+      {/* Weapon Type Dropdown */}
+      <div>
+        <label className="block mb-2" style={styles.label}>Weapon Type:</label>
+        <select value={weaponType} onChange={handleWeaponChange} className="border rounded px-4 py-2 w-full focus:ring-gray-600 focus:border-gray-600 transition" style={styles.input}>
+          {Object.keys(weaponData).map(w => <option key={w} value={w}>{w}</option>)}
+        </select>
+      </div>
+      
+      {/* Illegal Checkbox (Now auto-sets) */}
+      <div>
+        <label className="flex items-center gap-2" style={styles.label}>
+          <input type="checkbox" checked={isIllegal} onChange={(e) => handleChange('isIllegal', e.target.checked)} className="w-4 h-4" />
+          <span>Mark as Illegal Weapon</span>
+        </label>
+      </div>
+      
+      {/* Legal/Illegal Info Box */}
+      <div className="p-4 rounded" style={{ backgroundColor: !isIllegal ? (lightMode ? '#dcfce7' : '#064e3b') : (lightMode ? '#fee2e2' : '#7f1d1d'), color: lightMode ? '#000' : '#fff' }}>
+        <strong>{!isIllegal ? 'Legal Weapon' : 'Illegal Weapon'}</strong>
+        <p className="text-sm mt-1">{!isIllegal ? 'Can be returned to owner. Requires serial number and registration details.' : 'Will be destroyed. Serial number will be marked as "Removed".'}</p>
+      </div>
+      
+      {/* Ammunition (Dynamic Placeholder) */}
+      <div>
+        <label className="block mb-2" style={styles.label}>Ammunition:</label>
+        <input type="text" value={ammunition || ''} onChange={(e) => handleChange('ammunition', e.target.value)} placeholder={`x# / ${currentWeapon.ammo}`} className="border rounded px-4 py-2 w-full focus:ring-gray-600 focus:border-gray-600 transition" style={styles.input} />
+      </div>
+      
+      <div><label className="block mb-2" style={styles.label}>Modifications:</label><input type="text" value={modifications || ''} onChange={(e) => handleChange('modifications', e.target.value)} className="border rounded px-4 py-2 w-full focus:ring-gray-600 focus:border-gray-600 transition" style={styles.input} /></div>
+      
+      {/* --- Legal/Illegal Conditional Fields --- */}
+      {!isIllegal ? (
+        // --- Legal Fields ---
+        <>
+          <div><label className="block mb-2" style={styles.label}>Serial Number:</label><input type="text" value={serialNumber || ''} onChange={(e) => handleChange('serialNumber', e.target.value)} className="border rounded px-4 py-2 w-full focus:ring-gray-600 focus:border-gray-600 transition" style={styles.input} /></div>
+          <div><label className="block mb-2" style={styles.label}>Registered Owner:</label><input type="text" value={registeredOwner || ''} onChange={(e) => handleChange('registeredOwner', e.target.value)} placeholder="Fname Lname" className="border rounded px-4 py-2 w-full focus:ring-gray-600 focus:border-gray-600 transition" style={styles.input} /></div>
+          <div><label className="block mb-2" style={styles.label}>Owner Phone:</label><input type="text" value={ownerPhone || ''} onChange={(e) => handleChange('ownerPhone', e.target.value)} className="border rounded px-4 py-2 w-full focus:ring-gray-600 focus:border-gray-600 transition" style={styles.input} /></div>
+          <div><label className="block mb-2" style={styles.label}>Source / Store:</label><input type="text" value={source || ''} onChange={(e) => handleChange('source', e.target.value)} placeholder="STORE - MM/DD/YY HH:MM" className="border rounded px-4 py-2 w-full focus:ring-gray-600 focus:border-gray-600 transition" style={styles.input} /></div>
+        </>
+      ) : (
+        // --- Illegal Fields ---
+        <div>
+          <label className="block mb-2" style={styles.label}>Serial Number (OOC):</label>
+          <input type="text" value={serialOOC || ''} onChange={(e) => handleChange('serialOOC', e.target.value)} placeholder="SERIAL# | OWNER | SOURCE | MM/DD/YY HH:MM" className="border rounded px-4 py-2 w-full focus:ring-gray-600 focus:border-gray-600 transition" style={styles.input} />
+        </div>
+      )}
+      
+      {/* --- Common Fields (Legal & Illegal) --- */}
+      <div>
+        <label className="block mb-2" style={styles.label}>Recently Used:</label>
+        <div className="flex gap-4">
+          <label className="flex items-center gap-2" style={styles.label}><input type="radio" value="Yes" checked={recentlyUsed === 'Yes'} onChange={(e) => handleChange('recentlyUsed', e.target.value)} />Yes</label>
+          <label className="flex items-center gap-2" style={styles.label}><input type="radio" value="No" checked={recentlyUsed === 'No'} onChange={(e) => handleChange('recentlyUsed', e.target.value)} />No</label>
+        </div>
+      </div>
+      <div><label className="block mb-2" style={styles.label}>Person in Possession:</label><input type="text" value={personPossession || ''} onChange={(e) => handleChange('personPossession', e.target.value)} placeholder="Fname Lname" className="border rounded px-4 py-2 w-full focus:ring-gray-600 focus:border-gray-600 transition" style={styles.input} /></div>
+      <div><label className="block mb-2" style={styles.label}>Possession Phone:</label><input type="text" value={possessionPhone || ''} onChange={(e) => handleChange('possessionPhone', e.target.value)} className="border rounded px-4 py-2 w-full focus:ring-gray-600 focus:border-gray-600 transition" style={styles.input} /></div>
+      
+      {/* --- Weapon Outcome (Legal Only) --- */}
+      {!isIllegal && (
+        <div>
+          <label className="block mb-2" style={styles.label}>Weapon Outcome:</label>
+          <input type="text" value={weaponOutcome || ''} onChange={(e) => handleChange('weaponOutcome', e.target.value)} placeholder="Returned to Owner / Destroyed : REASON" className="border rounded px-4 py-2 w-full focus:ring-gray-600 focus:border-gray-600 transition" style={styles.input} />
+        </div>
+      )}
+      {isIllegal && (
+        <div className="p-4 rounded" style={{ backgroundColor: lightMode ? '#fef3c7' : '#78350f', color: lightMode ? '#000' : '#fff' }}>
+          <strong>Note:</strong> Illegal weapons are automatically marked as "Destroyed : Illegal Weapon"
+        </div>
+      )}
+      
+      {/* --- Generate Button & Output --- */}
+      <button onClick={generateBBCode} className="px-6 py-3 rounded font-medium w-full hover:opacity-80 transition duration-150" style={styles.button}>Generate BBCode</button>
+      {bbcode && (
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <label style={styles.label}>Generated BBCode:</label>
+            <button onClick={() => copyToClipboard(bbcode, (val) => handleChange('copied', val))} className="flex items-center gap-2 px-4 py-2 rounded text-sm hover:opacity-80 transition duration-150" style={styles.copyButton}>
+              {copied ? <><Check size={16} /> Copied!</> : <><Copy size={16} /> Copy</>}
+            </button>
+          </div>
+          <textarea value={bbcode} readOnly rows={20} className="border rounded px-4 py-2 w-full font-mono text-sm resize-none" style={styles.input} onClick={(e) => e.target.select()} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// --- 8. CASE FILE FORM ---
+function CaseFileForm({ lightMode, formData, setFormData, postUrl, globalSignature }) {
+  const {
+    startingDate, assignedUnit, caseFileNumber, overseeingOfficers, assistingOfficers,
+    caseLogs, narrative, customSignature, bbcode, copied
+  } = formData;
+
+  const styles = getStyles(lightMode);
+  const unitOptions = ['MCD', 'DSU', 'DSG', 'GND'];
+
+  const handleChange = (field, value) => {
+    setFormData({ [field]: value });
+  };
+
+  // --- Officer List Handlers ---
+  const handleOfficerChange = (listName, index, field, value) => {
+    const list = formData[listName] || [];
+    const newList = [...list];
+    newList[index][field] = value;
+    setFormData({ [listName]: newList });
+  };
+
+  const addOfficer = (listName) => {
+    const list = formData[listName] || [];
+    const newList = [...list, { id: `officer_${Date.now()}`, name: 'Rank Firstname Lastname', unit: 'DSU' }];
+    setFormData({ [listName]: newList });
+  };
+
+  const removeOfficer = (listName, index) => {
+    const list = formData[listName] || [];
+    if (list.length <= 1) return; // Keep at least one
+    const newList = list.filter((_, i) => i !== index);
+    setFormData({ [listName]: newList });
+  };
+  
+  // --- BBCode Generation ---
+  const generateBBCode = () => {
+    // Determine the signature
+    let finalSignature = '';
+    if (customSignature) {
+      // 1. Use the page-specific custom signature
+      finalSignature = customSignature;
+    } else if (globalSignature) {
+      // 2. Use the global signature
+      finalSignature = globalSignature;
+    } else {
+      // 3. Generate a default signature from the first overseeing officer
+      const firstOfficer = (overseeingOfficers || [])[0];
+      if (firstOfficer) {
+        const unitTitles = {
+          'MCD': 'Detective, Major Crimes Division',
+          'DSU': 'Detective Support Officer, Detective Support Unit',
+          'DSG': 'Detective Sergeant, Detective Support Group',
+          'GND': 'Detective, Gangs & Narcotics Division'
+        };
+        finalSignature = `[font=cursive]${(firstOfficer.name || 'FNAME LNAME').split(' ').slice(1).join(' ')}[/font]\n${firstOfficer.name || 'FNAME LNAME'}\n${unitTitles[firstOfficer.unit] || 'Detective, Detective Bureau'}\nLos Santos Police Department`;
+      } else {
+        // Absolute fallback
+        finalSignature = `[font=cursive]Signature[/font]\nRank Fname Lname\nDetective, Detective Bureau\nLos Santos Police Department`;
+      }
+    }
+
+    // Format officer lists
+    const formatOfficers = (list) => {
+      return (list || []).map(officer => `[*]${officer.name} - ${officer.unit}`).join('\n');
+    };
+    
+    // Format case logs
+    const formatLogs = (logs) => {
+      return (logs || '').split('\n').filter(log => log.trim()).map(log => `[*]${log.trim()}`).join('\n');
+    };
+
+    let code = `[img]https://i.imgur.com/8bfY9tq.png[/img]\n\n`;
+    code += `[lspdsubtitle]CASE DETAILS[/lspdsubtitle]\n`;
+    code += `[divbox=white][list=none]\n`;
+    code += `[b]Casefile starting date:[/b] ${startingDate || 'DD/MMM/YYYY'}\n`;
+    code += `[b]Assigned unit:[/b] ${assignedUnit}\n`;
+    code += `[b]Casefile Number:[/b] ${caseFileNumber || 'XXXX'}\n`;
+    code += `[/list][/divbox]\n\n`;
+    
+    code += `[lspdsubtitle]INVOLVED OFFICERS[/lspdsubtitle]\n`;
+    code += `[divbox=white][list=none]\n`;
+    code += `[b]Overseeing Detective(s) / Officer(s):[/b]\n[list]\n`;
+    code += formatOfficers(overseeingOfficers) + `\n[/list]\n`;
+    code += `[b]Assisting Detective(s) / Officer(s):[/b]\n[list]\n`;
+    code += formatOfficers(assistingOfficers) + `\n[/list]\n`;
+    code += `[/list][/divbox]\n\n`;
+    
+    code += `[lspdsubtitle]CASE LOGS[/lspdsubtitle]\n`;
+    code += `[divbox=white][list]\n`;
+    code += formatLogs(caseLogs) + `\n[/list][/divbox]\n\n`;
+    
+    code += `[lspdsubtitle]CASE NARRATIVE[/lspdsubtitle]\n`;
+    code += `[divbox=white]\n${narrative || 'NARRATIVE HERE'}\n[/divbox]\n\n`;
+    
+    code += `[lspdsubtitle]SIGNATURE[/lspdsubtitle]\n`;
+    code += `[divbox=white][list=none]\n`;
+    code += `Sincerely,\n`;
+    code += `${finalSignature}\n`;
+    code += `[/list][/divbox]\n\n`;
+    code += `[lspdfooter][/lspdfooter]`;
+
+    handleChange('bbcode', code);
+    copyToClipboard(code, (val) => handleChange('copied', val));
+    if (postUrl) {
+      window.open(postUrl, '_blank');
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Case Details */}
+      <h3 className="text-xl font-semibold border-b pb-2" style={styles.label}>Case Details</h3>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div><label className="block mb-2" style={styles.label}>Starting Date:</label><input type="text" value={startingDate || ''} onChange={(e) => handleChange('startingDate', e.target.value)} placeholder="DD/MMM/YYYY" className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+        <div>
+          <label className="block mb-2" style={styles.label}>Assigned Unit:</label>
+          <select value={assignedUnit || 'DSU'} onChange={(e) => handleChange('assignedUnit', e.target.value)} className="border rounded px-4 py-2 w-full" style={styles.input}>
+            {unitOptions.map(unit => <option key={unit} value={unit}>{unit}</option>)}
+          </select>
+        </div>
+        <div><label className="block mb-2" style={styles.label}>Casefile Number:</label><input type="text" value={caseFileNumber || ''} onChange={(e) => handleChange('caseFileNumber', e.target.value)} placeholder="XXXX" className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+      </div>
+
+      <hr style={{ borderColor: lightMode ? '#e0e0e0' : '#2d2d2d' }} />
+
+      {/* Involved Officers */}
+      <h3 className="text-xl font-semibold border-b pb-2" style={styles.label}>Involved Officers</h3>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {/* Overseeing Officers */}
+        <div className="space-y-3">
+          <label className="block mb-2 font-medium" style={styles.label}>Overseeing Detective(s) / Officer(s):</label>
+          {Array.isArray(overseeingOfficers) && overseeingOfficers.map((officer, index) => (
+            <div key={officer.id} className="flex items-center gap-2">
+              <input type="text" value={officer.name} onChange={(e) => handleOfficerChange('overseeingOfficers', index, 'name', e.target.value)} placeholder="Rank Firstname Lastname" className="border rounded px-4 py-2 w-full" style={styles.input} />
+              <select value={officer.unit} onChange={(e) => handleOfficerChange('overseeingOfficers', index, 'unit', e.target.value)} className="border rounded px-4 py-2" style={styles.input}>
+                {unitOptions.map(unit => <option key={unit} value={unit}>{unit}</option>)}
+              </select>
+              <button onClick={() => removeOfficer('overseeingOfficers', index)} className="p-2 rounded hover:opacity-80" style={styles.moduleRemoveButton}><Trash2 size={16} /></button>
+            </div>
+          ))}
+          <button onClick={() => addOfficer('overseeingOfficers')} className="px-4 py-2 rounded text-sm font-medium hover:opacity-80 flex items-center gap-2" style={styles.moduleButton}><Plus size={16} /> Add Officer</button>
+        </div>
+        
+        {/* Assisting Officers */}
+        <div className="space-y-3">
+          <label className="block mb-2 font-medium" style={styles.label}>Assisting Detective(s) / Officer(s):</label>
+          {Array.isArray(assistingOfficers) && assistingOfficers.map((officer, index) => (
+            <div key={officer.id} className="flex items-center gap-2">
+              <input type="text" value={officer.name} onChange={(e) => handleOfficerChange('assistingOfficers', index, 'name', e.target.value)} placeholder="Rank Firstname Lastname" className="border rounded px-4 py-2 w-full" style={styles.input} />
+              <select value={officer.unit} onChange={(e) => handleOfficerChange('assistingOfficers', index, 'unit', e.target.value)} className="border rounded px-4 py-2" style={styles.input}>
+                {unitOptions.map(unit => <option key={unit} value={unit}>{unit}</option>)}
+              </select>
+              <button onClick={() => removeOfficer('assistingOfficers', index)} className="p-2 rounded hover:opacity-80" style={styles.moduleRemoveButton}><Trash2 size={16} /></button>
+            </div>
+          ))}
+          <button onClick={() => addOfficer('assistingOfficers')} className="px-4 py-2 rounded text-sm font-medium hover:opacity-80 flex items-center gap-2" style={styles.moduleButton}><Plus size={16} /> Add Officer</button>
+        </div>
+      </div>
+      
+      <hr style={{ borderColor: lightMode ? '#e0e0e0' : '#2d2d2d' }} />
+      
+      {/* Case Logs & Narrative */}
+      <div><label className="block mb-2" style={styles.label}>Case Logs (One per line, e.g., [url=LINK]TITLE[/url]):</label><textarea value={caseLogs || ''} onChange={(e) => handleChange('caseLogs', e.target.value)} rows={4} className="border rounded px-4 py-2 w-full resize-none font-mono text-sm" style={styles.input} /></div>
+      <div><label className="block mb-2" style={styles.label}>Case Narrative:</label><textarea value={narrative || ''} onChange={(e) => handleChange('narrative', e.target.value)} rows={6} className="border rounded px-4 py-2 w-full resize-none" style={styles.input} /></div>
+      
+      <hr style={{ borderColor: lightMode ? '#e0e0e0' : '#2d2d2d' }} />
+
+      {/* Signature */}
+      <h3 className="text-xl font-semibold border-b pb-2" style={styles.label}>Signature</h3>
+      <div>
+        <label className="block mb-2" style={styles.label}>Custom Signature (Overrides Global Signature for this page only):</label>
+        <textarea 
+          value={customSignature || ''} 
+          onChange={(e) => handleChange('customSignature', e.target.value)} 
+          rows={5} 
+          className="border rounded px-4 py-2 w-full resize-none font-mono text-sm" 
+          style={styles.input} 
+          placeholder="Paste custom BBCode signature here...
+[img]...[/img]
+Name, Rank
+Title, Division
+..."
+        />
+      </div>
+
+      {/* Generate Button & Output */}
+      <button onClick={generateBBCode} className="px-6 py-3 rounded font-medium w-full hover:opacity-80 transition duration-150" style={styles.button}>Generate BBCode</button>
+      {bbcode && (
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <label style={styles.label}>Generated BBCode:</label>
+            <button onClick={() => copyToClipboard(bbcode, (val) => handleChange('copied', val))} className="flex items-center gap-2 px-4 py-2 rounded text-sm hover:opacity-80 transition duration-150" style={styles.copyButton}>
+              {copied ? <><Check size={16} /> Copied!</> : <><Copy size={16} /> Copy</>}
+            </button>
+          </div>
+          <textarea value={bbcode} readOnly rows={20} className="border rounded px-4 py-2 w-full font-mono text-sm resize-none" style={styles.input} onClick={(e) => e.target.select()} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// --- 9. LOGGING UPDATES FORM ---
+function LoggingUpdatesForm({ lightMode, formData, setFormData, postUrl, globalSignature }) {
+  const { re, relevantInfo, updates, signature, bbcode, copied } = formData;
+  const styles = getStyles(lightMode);
+  
+  // Update signature in form data if global one changes and local one is default
+  useEffect(() => {
+    // This logic ensures that if the user hasn't typed a custom signature in this form,
+    // it updates to reflect the new global signature.
+    const defaultSig = `[img]SIGNATURE[/img]\nFNAME LNAME, Police Rank\nDetective Support Officer, Detective Support Unit\nLos Santos Police Department`;
+    if (globalSignature && (signature === defaultSig || !signature)) {
+      setFormData({ signature: globalSignature });
+    }
+  }, [globalSignature, signature, setFormData]);
+
+  const handleChange = (field, value) => {
+    setFormData({ [field]: value });
+  };
+  
+  const generateBBCode = () => {
+    let code = '[lspdfooter][/lspdfooter]\n';
+    code += '[divbox=white]\n';
+    code += '[dblogo=150][/dblogo][aligntable=right,0,0,0,0,0,0][right][font=Arial][b]\n';
+    code += '[size=150]Los Santos Police Department[/size][/b]\n';
+    code += '[size=95]"TO PROTECT AND TO SERVE"[/size][/font][/right][/aligntable]\n';
+    code += '[hr]\n';
+    code += '[list=none]\n';
+    code += `[b]Re:[/b] ${re || 'Casefile update'}\n\n`;
+    code += `${relevantInfo || 'Relevant information.'}\n\n`;
+    code += `Casefile updated with the following:\n[list]\n`;
+    (updates || '').split('\n').forEach(update => {
+      if (update.trim()) code += `[*]${update.trim()}\n`;
+    });
+    code += `[/list]\n\n`;
+    code += '[/list]\n';
+    code += '[hr][/hr]\n';
+    code += '[list=none]\n';
+    code += `Sincerely,\n`;
+    code += `${signature}\n`; // Use the signature from state
+    code += `[/list][/divbox]\n\n`;
+    code += '[lspdfooter][/lspdfooter]';
+
+    handleChange('bbcode', code);
+    copyToClipboard(code, (val) => handleChange('copied', val));
+    if (postUrl) {
+      window.open(postUrl, '_blank');
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div><label className="block mb-2" style={styles.label}>Re:</label><input type="text" value={re || ''} onChange={(e) => handleChange('re', e.target.value)} className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+      <div><label className="block mb-2" style={styles.label}>Relevant Information:</label><textarea value={relevantInfo || ''} onChange={(e) => handleChange('relevantInfo', e.target.value)} rows={3} className="border rounded px-4 py-2 w-full resize-none" style={styles.input} /></div>
+      <div><label className="block mb-2" style={styles.label}>Updates (One per line):</label><textarea value={updates || ''} onChange={(e) => handleChange('updates', e.target.value)} rows={4} className="border rounded px-4 py-2 w-full resize-none" style={styles.input} /></div>
+      
+      <hr style={{ borderColor: lightMode ? '#e0e0e0' : '#2d2d2d' }} />
+      
+      <div><label className="block mb-2" style={styles.label}>Signature (Defaults to Global Signature):</label><textarea value={signature || ''} onChange={(e) => handleChange('signature', e.target.value)} rows={5} className="border rounded px-4 py-2 w-full resize-none font-mono text-sm" style={styles.input} /></div>
+
+      {/* Generate Button & Output */}
+      <button onClick={generateBBCode} className="px-6 py-3 rounded font-medium w-full hover:opacity-80 transition duration-150" style={styles.button}>Generate BBCode</button>
+      {bbcode && (
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <label style={styles.label}>Generated BBCode:</label>
+            <button onClick={() => copyToClipboard(bbcode, (val) => handleChange('copied', val))} className="flex items-center gap-2 px-4 py-2 rounded text-sm hover:opacity-80 transition duration-150" style={styles.copyButton}>
+              {copied ? <><Check size={16} /> Copied!</> : <><Copy size={16} /> Copy</>}
+            </button>
+          </div>
+          <textarea value={bbcode} readOnly rows={20} className="border rounded px-4 py-2 w-full font-mono text-sm resize-none" style={styles.input} onClick={(e) => e.target.select()} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// --- 10. CASE CONCLUSION FORM ---
+function CaseConclusionForm({ lightMode, formData, setFormData, postUrl, globalSignature }) {
+  const { re, closingStatement, conclusionDetails, signature, bbcode, copied } = formData;
+  const styles = getStyles(lightMode);
+
+  // Update signature in form data if global one changes and local one is default
+  useEffect(() => {
+    const defaultSig = `[img]SIGNATURE[/img]\nFNAME LNAME, Police Rank\nDetective Support Officer, Detective Support Unit\nLos Santos Police Department`;
+    if (globalSignature && (signature === defaultSig || !signature)) {
+      setFormData({ signature: globalSignature });
+    }
+  }, [globalSignature, signature, setFormData]);
+
+  const handleChange = (field, value) => {
+    setFormData({ [field]: value });
+  };
+  
+  const generateBBCode = () => {
+    let code = '[lspdfooter][/lspdfooter]\n';
+    code += '[divbox=white]\n';
+    code += '[dblogo=150][/dblogo][aligntable=right,0,0,0,0,0,0][right][font=Arial][b]\n';
+    code += '[size=150]Los Santos Police Department[/size][/b]\n';
+    code += '[size=95]"TO PROTECT AND TO SERVE"[/size][/font][/right][/aligntable]\n';
+    code += '[hr]\n';
+    code += '[list=none]\n';
+    code += `[b]Re:[/b] ${re || 'Casefile conclusion'}\n\n`;
+    code += `This case is now considered concluded.\n\n`;
+    code += `[divbox=white]\n${closingStatement || 'CLOSING STATEMENT HERE'}\n[/divbox]\n\n`;
+    code += `In conclusion:\n[list]\n`;
+    (conclusionDetails || '').split('\n').forEach(detail => {
+      if (detail.trim()) code += `[*]${detail.trim()}\n`;
+    });
+    code += `[/list]\n\n`;
+    code += '[/list]\n';
+    code += '[hr][/hr]\n';
+    code += '[list=none]\n';
+    code += `Sincerely,\n`;
+    code += `${signature}\n`; // Use the signature from state
+    code += `[/list][/divbox]\n\n`;
+    code += '[lspdfooter][/lspdfooter]';
+
+    handleChange('bbcode', code);
+    copyToClipboard(code, (val) => handleChange('copied', val));
+    if (postUrl) {
+      window.open(postUrl, '_blank');
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div><label className="block mb-2" style={styles.label}>Re:</label><input type="text" value={re || ''} onChange={(e) => handleChange('re', e.target.value)} className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+      <div><label className="block mb-2" style={styles.label}>Closing Statement:</label><textarea value={closingStatement || ''} onChange={(e) => handleChange('closingStatement', e.target.value)} rows={6} className="border rounded px-4 py-2 w-full resize-none" style={styles.input} /></div>
+      <div><label className="block mb-2" style={styles.label}>Conclusion Details (One per line):</label><textarea value={conclusionDetails || ''} onChange={(e) => handleChange('conclusionDetails', e.target.value)} rows={4} className="border rounded px-4 py-2 w-full resize-none" style={styles.input} /></div>
+      
+      <hr style={{ borderColor: lightMode ? '#e0e0e0' : '#2d2d2d' }} />
+      
+      <div><label className="block mb-2" style={styles.label}>Signature (Defaults to Global Signature):</label><textarea value={signature || ''} onChange={(e) => handleChange('signature', e.target.value)} rows={5} className="border rounded px-4 py-2 w-full resize-none font-mono text-sm" style={styles.input} /></div>
+
+      {/* Generate Button & Output */}
+      <button onClick={generateBBCode} className="px-6 py-3 rounded font-medium w-full hover:opacity-80 transition duration-150" style={styles.button}>Generate BBCode</button>
+      {bbcode && (
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <label style={styles.label}>Generated BBCode:</label>
+            <button onClick={() => copyToClipboard(bbcode, (val) => handleChange('copied', val))} className="flex items-center gap-2 px-4 py-2 rounded text-sm hover:opacity-80 transition duration-150" style={styles.copyButton}>
+              {copied ? <><Check size={16} /> Copied!</> : <><Copy size={16} /> Copy</>}
+            </button>
+          </div>
+          <textarea value={bbcode} readOnly rows={20} className="border rounded px-4 py-2 w-full font-mono text-sm resize-none" style={styles.input} onClick={(e) => e.target.select()} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// --- 11. EVIDENCE LOG WRAPPER (NEW) ---
+// This component manages multiple instances of a sub-form (e.g., multiple suspects)
+function EvidenceLogWrapper({ ModuleComponent, formTitle, initialState, lightMode, userId, combinedName, globalSignature }) {
+  const styles = getStyles(lightMode);
+  
+  // State for all modules of this type (e.g., all suspects)
+  const [modules, setModules] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  
+  const debounceTimer = useRef(null);
+  const docRef = useRef(null);
+  
+  // Sanitize formTitle for Firestore path (removes '/')
+  const firestoreDocId = formTitle.replace(/\s*\/\s*/g, ' ');
+
+  // --- 1. LOAD DATA FROM FIRESTORE ---
+  useEffect(() => {
+    if (!userId || !firebaseInitialized) {
+      setIsLoading(false);
+      return;
+    }
+    
+    // Use the sanitized ID for the document path
+    docRef.current = doc(db, 'artifacts', appId, 'users', userId, 'evidence', firestoreDocId);
+    
+    const loadModuleData = async () => {
+      setIsLoading(true);
+      try {
+        const docSnap = await getDoc(docRef.current);
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          // Data is stored as a JSON string, parse it
+          if (data.modulesJson) {
+            let parsedModules = JSON.parse(data.modulesJson);
+            if (!Array.isArray(parsedModules)) { // <-- FIX: Add safeguard
+              parsedModules = [];
+            }
+            setModules(parsedModules);
+          } else {
+            setModules([]); // No modules found
+          }
+        } else {
+          setModules([]); // No document found
+        }
+      } catch (error) {
+        console.error(`Error loading modules for ${formTitle}:`, error);
+        setModules([]); // Fallback on error
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    
+    loadModuleData();
+  }, [userId, formTitle, firestoreDocId]);
+
+  // --- 2. SAVE DATA TO FIRESTORE (DEBOUNCED) ---
+  useEffect(() => {
+    if (isLoading || !userId || !docRef.current) {
+      return;
+    }
+    if (debounceTimer.current) {
+      clearTimeout(debounceTimer.current);
+    }
+    debounceTimer.current = setTimeout(async () => {
+      try {
+        // Stringify the modules array for storage
+        const modulesJson = JSON.stringify(modules);
+        await setDoc(docRef.current, { modulesJson, updatedAt: serverTimestamp() });
+        console.log(`Saved modules for ${formTitle}`);
+      } catch (error) {
+        console.error(`Error saving modules for ${formTitle}:`, error);
+      }
+    }, 1500); // 1.5-second debounce
+
+    return () => {
+      if (debounceTimer.current) {
+        clearTimeout(debounceTimer.current);
+      }
+    };
+  }, [modules, userId, formTitle, isLoading, firestoreDocId]);
+  
+  // --- Module Handlers ---
+  const addModule = () => {
+    let newModuleState = initialState;
+    if (formTitle === 'Operation Log (Standalone)') {
+      newModuleState = getOperationLogStandaloneInitialState(combinedName);
+    }
+    
+    setModules(currentModules => [
+      ...currentModules,
+      { id: Date.now(), ...newModuleState }
+    ]);
+  };
+
+  const removeModule = (id) => {
+    setModules(currentModules => (Array.isArray(currentModules) ? currentModules.filter(module => module.id !== id) : []));
+  };
+
+  // Update a specific module's data
+  const setModuleData = (id, newData) => {
+    setModules(currentModules =>
+      (Array.isArray(currentModules) ? currentModules.map(module => // <-- FIX: Add safeguard
+        module.id === id ? { ...module, ...newData } : module
+      ) : [])
+    );
+  };
+  
+  if (isLoading) {
+    return <div className="text-center py-12" style={{ color: lightMode ? '#666' : '#9ca3af' }}>Loading modules...</div>;
+  }
+
+  return (
+    <div>
+      {/* Header and "Add Module" Button */}
+      <div className="flex justify-between items-center mb-6">
+        <h2 className="text-2xl" style={{ color: lightMode ? '#000' : '#f3f4f6' }}>{formTitle}</h2>
+        <button 
+          onClick={addModule} 
+          className="px-4 py-2 rounded text-sm font-medium hover:opacity-80 transition duration-150 flex items-center gap-2" 
+          style={styles.moduleButton}
+        >
+          <Plus size={16} /> Add {formTitle.replace('Log', '')}
+        </button>
+      </div>
+      
+      {/* Render all modules */}
+      <div className="space-y-6">
+        {Array.isArray(modules) && modules.map(module => ( // <-- FIX: Add safeguard
+          <div key={module.id} className="p-6 rounded-lg" style={{ backgroundColor: lightMode ? '#f9fafb' : '#1f2937', border: `1px solid ${lightMode ? '#e5e7eb' : '#374151'}`}}>
+            <ModuleComponent
+              lightMode={lightMode}
+              formData={module}
+              setFormData={(newData) => setModuleData(module.id, newData)}
+              removeModule={() => removeModule(module.id)}
+              combinedName={combinedName}
+              globalSignature={globalSignature}
+            />
+          </div>
+        ))}
+        {(!Array.isArray(modules) || modules.length === 0) && ( // <-- FIX: Add safeguard
+          <p className="text-center py-12" style={{ color: lightMode ? '#666' : '#9ca3af' }}>No modules added yet. Click the button above to add one.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// --- 12. SUSPECT LOG MODULE ---
+function SuspectModuleForm({ lightMode, formData, setFormData, removeModule }) {
+  const { fname, lname, description, phone, vehicles, info, charges, bbcode, copied } = formData;
+  const styles = getStyles(lightMode);
+  const handleChange = (field, value) => setFormData({ [field]: value });
+  
+  const generateBBCode = () => {
+    let code = `[spoiler=Suspect - ${fname || 'Fname'} ${lname || 'Lname'}]\n`;
+    code += `[divbox=white][list=none]\n`;
+    code += `[float=right][divbox=white][fimg=200,200]https://i.imgur.com/oV6gumI.png[/fimg][/divbox][/float]\n`;
+    code += `[b]Description:[/b] ${description}\n`;
+    code += `[b]Phone Number:[/b] ${phone}\n`;
+    code += `[b]Known Vehicles:[/b]\n[list]\n`;
+    (vehicles || '').split('\n').forEach(v => {
+      if (v.trim()) code += `[*]${v.trim()}\n`;
+    });
+    code += `[/list]\n`;
+    code += `[b]Additional Information:[/b]\n${info}\n`;
+    code += `[b]Facing Charges:[/b]\n[list]\n`;
+    (charges || '').split('\n').forEach(c => {
+      if (c.trim()) code += `[*]${c.trim()}\n`;
+    });
+    code += `[/list]\n`;
+    code += `[/divbox]\n`;
+    code += `[/spoiler]`;
+    
+    handleChange('bbcode', code);
+    copyToClipboard(code, (val) => handleChange('copied', val));
+  };
+  
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center mb-2">
+        <h3 className="text-xl font-semibold" style={styles.label}>Suspect Module: {fname} {lname}</h3>
+        <button onClick={removeModule} className="p-2 rounded hover:opacity-80" style={styles.moduleRemoveButton}><Trash2 size={16} /></button>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div><label className="block mb-2" style={styles.label}>First Name:</label><input type="text" value={fname} onChange={(e) => handleChange('fname', e.target.value)} className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+        <div><label className="block mb-2" style={styles.label}>Last Name:</label><input type="text" value={lname} onChange={(e) => handleChange('lname', e.target.value)} className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+      </div>
+      <div><label className="block mb-2" style={styles.label}>Phone Number:</label><input type="text" value={phone} onChange={(e) => handleChange('phone', e.target.value)} className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+      <div><label className="block mb-2" style={styles.label}>Description:</label><textarea value={description} onChange={(e) => handleChange('description', e.target.value)} rows={3} className="border rounded px-4 py-2 w-full resize-none" style={styles.input} /></div>
+      <div><label className="block mb-2" style={styles.label}>Known Vehicles (One per line):</label><textarea value={vehicles} onChange={(e) => handleChange('vehicles', e.target.value)} rows={3} className="border rounded px-4 py-2 w-full resize-none" style={styles.input} /></div>
+      <div><label className="block mb-2" style={styles.label}>Additional Information:</label><textarea value={info} onChange={(e) => handleChange('info', e.target.value)} rows={3} className="border rounded px-4 py-2 w-full resize-none" style={styles.input} /></div>
+      <div><label className="block mb-2" style={styles.label}>Facing Charges (One per line):</label><textarea value={charges} onChange={(e) => handleChange('charges', e.target.value)} rows={3} className="border rounded px-4 py-2 w-full resize-none" style={styles.input} /></div>
+      
+      <button onClick={generateBBCode} className="px-4 py-2 rounded text-sm font-medium hover:opacity-80 flex items-center gap-2" style={styles.copyButton}>
+        {copied ? <><Check size={16} /> Copied!</> : <><Copy size={16} /> Copy BBCode</>}
+      </button>
+      {bbcode && (
+        <textarea value={bbcode} readOnly rows={5} className="border rounded px-4 py-2 w-full font-mono text-xs resize-none" style={styles.input} onClick={(e) => e.target.select()} />
+      )}
+    </div>
+  );
+}
+
+// --- 13. VICTIM / WITNESS LOG MODULE ---
+function VictimWitnessModuleForm({ lightMode, formData, setFormData, removeModule, combinedName, globalSignature }) {
+  const { fname, lname, phone, statement, date, officerSignature, officerRank, bbcode, copied } = formData;
+  const styles = getStyles(lightMode);
+  const handleChange = (field, value) => setFormData({ [field]: value });
+  
+  const generateBBCode = () => {
+    const sigParts = (combinedName || 'Police Rank,Los Santos Police Department').split(',');
+    const defaultRank = sigParts[0];
+    
+    let code = `[spoiler=Victim/Witness - ${fname || 'Fname'} ${lname || 'Lname'}]\n[list=none]\n`;
+    code += `[float=right][divbox=white][fimg=150,150]https://i.imgur.com/oV6gumI.png[/fimg][/divbox][/float]\n`;
+    code += `[b]Phone Number:[/b] ${phone}\n`;
+    code += `[b]Statement:[/b] ${statement}\n`;
+    code += `[hr][/hr]\n`;
+    code += `${date || 'DD/MMM/YYYY'}\n`;
+    code += `${officerSignature || (globalSignature ? 'Signature BBCode' : 'Fname Lname')}\n`; // Placeholder, user should fill
+    code += `${officerRank || defaultRank}\n`;
+    code += `Los Santos Police Department\n`;
+    code += `[/spoiler]`;
+    
+    handleChange('bbcode', code);
+    copyToClipboard(code, (val) => handleChange('copied', val));
+  };
+  
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center mb-2">
+        <h3 className="text-xl font-semibold" style={styles.label}>Victim/Witness Module: {fname} {lname}</h3>
+        <button onClick={removeModule} className="p-2 rounded hover:opacity-80" style={styles.moduleRemoveButton}><Trash2 size={16} /></button>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div><label className="block mb-2" style={styles.label}>First Name:</label><input type="text" value={fname} onChange={(e) => handleChange('fname', e.target.value)} className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+        <div><label className="block mb-2" style={styles.label}>Last Name:</label><input type="text" value={lname} onChange={(e) => handleChange('lname', e.target.value)} className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+        <div><label className="block mb-2" style={styles.label}>Phone Number:</label><input type="text" value={phone} onChange={(e) => handleChange('phone', e.target.value)} className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+      </div>
+      <div><label className="block mb-2" style={styles.label}>Statement:</label><textarea value={statement} onChange={(e) => handleChange('statement', e.target.value)} rows={4} className="border rounded px-4 py-2 w-full resize-none" style={styles.input} /></div>
+      <hr style={{ borderColor: lightMode ? '#e0e0e0' : '#2d2d2d' }} />
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div><label className="block mb-2" style={styles.label}>Date:</label><input type="text" value={date} onChange={(e) => handleChange('date', e.target.value)} placeholder="DD/MMM/YYYY" className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+        <div><label className="block mb-2" style={styles.label}>Officer Signature:</label><input type="text" value={officerSignature} onChange={(e) => handleChange('officerSignature', e.target.value)} placeholder="Fname Lname or BBCode" className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+        <div><label className="block mb-2" style={styles.label}>Officer Rank:</label><input type="text" value={officerRank} onChange={(e) => handleChange('officerRank', e.target.value)} placeholder="Police Rank" className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+      </div>
+      
+      <button onClick={generateBBCode} className="px-4 py-2 rounded text-sm font-medium hover:opacity-80 flex items-center gap-2" style={styles.copyButton}>
+        {copied ? <><Check size={16} /> Copied!</> : <><Copy size={16} /> Copy BBCode</>}
+      </button>
+      {bbcode && (
+        <textarea value={bbcode} readOnly rows={5} className="border rounded px-4 py-2 w-full font-mono text-xs resize-none" style={styles.input} onClick={(e) => e.target.select()} />
+      )}
+    </div>
+  );
+}
+
+// --- 14. INTERROGATION LOG MODULE ---
+function InterrogationModuleForm({ lightMode, formData, setFormData, removeModule, combinedName, globalSignature }) {
+  const { fname, lname, detectiveName, detectiveInitials, transcript, date, officerSignature, officerRank, bbcode, copied } = formData;
+  const styles = getStyles(lightMode);
+  const handleChange = (field, value) => setFormData({ [field]: value });
+  
+  const generateBBCode = () => {
+    const sigParts = (combinedName || 'Police Rank,Los Santos Police Department').split(',');
+    const defaultRank = sigParts[0];
+    
+    let transcriptOutput = '';
+    (transcript || '').split('\n').forEach(line => {
+      if (line.trim()) {
+        if (line.toUpperCase().startsWith('DI:')) {
+          transcriptOutput += `[color=#4000BF][b]DI:[/b][/color] ${line.substring(3).trim()}\n`;
+        } else if (line.toUpperCase().startsWith('SI:')) {
+          transcriptOutput += `[color=#BF0000][b]SI:[/b][/color] ${line.substring(3).trim()}\n`;
+        } else if (line.toUpperCase().includes('(DETECTIVE INITIALS):')) {
+           transcriptOutput += `[color=#4000BF][b]${line.split(':')[0]}:[/b][/color] ${line.split(':').slice(1).join(':').trim()}\n`;
+        } else if (line.toUpperCase().includes('(SUSPECT INITIALS):')) {
+           transcriptOutput += `[color=#BF0000][b]${line.split(':')[0]}:[/b][/color] ${line.split(':').slice(1).join(':').trim()}\n`;
+        } else {
+          transcriptOutput += `${line}\n`; // Keep lines that don't match format
+        }
+      }
+    });
+
+    let code = `[spoiler=Interrogation - ${fname || 'Fname'} ${lname || 'Lname'}]\n[list=none]\n`;
+    code += transcriptOutput;
+    code += `[hr][/hr]\n`;
+    code += `${date || 'DD/MMM/YYYY'}\n`;
+    code += `${officerSignature || (globalSignature ? 'Signature BBCode' : 'Fname Lname')}\n`; // Placeholder
+    code += `${officerRank || defaultRank}\n`;
+    code += `Los Santos Police Department\n`;
+    code += `[/list]\n[/spoiler]`;
+    
+    handleChange('bbcode', code);
+    copyToClipboard(code, (val) => handleChange('copied', val));
+  };
+  
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center mb-2">
+        <h3 className="text-xl font-semibold" style={styles.label}>Interrogation Module: {fname} {lname}</h3>
+        <button onClick={removeModule} className="p-2 rounded hover:opacity-80" style={styles.moduleRemoveButton}><Trash2 size={16} /></button>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div><label className="block mb-2" style={styles.label}>Suspect First Name:</label><input type="text" value={fname} onChange={(e) => handleChange('fname', e.target.value)} className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+        <div><label className="block mb-2" style={styles.label}>Suspect Last Name:</label><input type="text" value={lname} onChange={(e) => handleChange('lname', e.target.value)} className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+         <div><label className="block mb-2" style={styles.label}>Detective Name:</label><input type="text" value={detectiveName} onChange={(e) => handleChange('detectiveName', e.target.value)} placeholder="DETECTIVE NAME" className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+         <div><label className="block mb-2" style={styles.label}>Detective Initials:</label><input type="text" value={detectiveInitials} onChange={(e) => handleChange('detectiveInitials', e.target.value)} placeholder="DI" className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+      </div>
+      <div>
+        <label className="block mb-2" style={styles.label}>Transcript:</label>
+        <textarea value={transcript} onChange={(e) => handleChange('transcript', e.target.value)} rows={6} className="border rounded px-4 py-2 w-full resize-none font-mono text-sm" style={styles.input} />
+      </div>
+      <hr style={{ borderColor: lightMode ? '#e0e0e0' : '#2d2d2d' }} />
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div><label className="block mb-2" style={styles.label}>Date:</label><input type="text" value={date} onChange={(e) => handleChange('date', e.target.value)} placeholder="DD/MMM/YYYY" className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+        <div><label className="block mb-2" style={styles.label}>Officer Signature:</label><input type="text" value={officerSignature} onChange={(e) => handleChange('officerSignature', e.target.value)} placeholder="Fname Lname or BBCode" className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+        <div><label className="block mb-2" style={styles.label}>Officer Rank:</label><input type="text" value={officerRank} onChange={(e) => handleChange('officerRank', e.target.value)} placeholder="Police Rank" className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+      </div>
+      
+      <button onClick={generateBBCode} className="px-4 py-2 rounded text-sm font-medium hover:opacity-80 flex items-center gap-2" style={styles.copyButton}>
+        {copied ? <><Check size={16} /> Copied!</> : <><Copy size={16} /> Copy BBCode</>}
+      </button>
+      {bbcode && (
+        <textarea value={bbcode} readOnly rows={5} className="border rounded px-4 py-2 w-full font-mono text-xs resize-none" style={styles.input} onClick={(e) => e.target.select()} />
+      )}
+    </div>
+  );
+}
+
+// --- 15. MEDIA LOG MODULE ---
+function MediaLogModuleForm({ lightMode, formData, setFormData, removeModule }) {
+  const { exhibitNumber, item, description, link, linkName, media, bbcode, copied } = formData;
+  const styles = getStyles(lightMode);
+  const handleChange = (field, value) => setFormData({ [field]: value });
+  
+  const generateBBCode = () => {
+    let code = `[spoiler=Exhibit #${exhibitNumber || '00'}: ${item || 'ITEM'}]\n[list=none]\n`;
+    code += `${description || 'DESCRIPTION'}\n`;
+    if (link && linkName) {
+      code += `[url=${link}]${linkName}[/url]\n`;
+    }
+    if (media) {
+      // Check if it's an image or just text
+      if (media.startsWith('http') && (media.endsWith('.png') || media.endsWith('.jpg') || media.endsWith('.gif'))) {
+        code += `[img]${media}[/img]\n`;
+      } else {
+         code += `${media}\n`;
+      }
+    }
+    code += `[/list]\n[/spoiler]`;
+    
+    handleChange('bbcode', code);
+    copyToClipboard(code, (val) => handleChange('copied', val));
+  };
+  
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center mb-2">
+        <h3 className="text-xl font-semibold" style={styles.label}>Media Module: {item}</h3>
+        <button onClick={removeModule} className="p-2 rounded hover:opacity-80" style={styles.moduleRemoveButton}><Trash2 size={16} /></button>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div><label className="block mb-2" style={styles.label}>Exhibit Number:</label><input type="text" value={exhibitNumber} onChange={(e) => handleChange('exhibitNumber', e.target.value)} placeholder="00" className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+        <div><label className="block mb-2" style={styles.label}>Item:</label><input type="text" value={item} onChange={(e) => handleChange('item', e.target.value)} placeholder="ITEM" className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+      </div>
+      <div><label className="block mb-2" style={styles.label}>Description:</label><textarea value={description} onChange={(e) => handleChange('description', e.target.value)} rows={3} className="border rounded px-4 py-2 w-full resize-none" style={styles.input} /></div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div><label className="block mb-2" style={styles.label}>Link URL (Optional):</label><input type="text" value={link} onChange={(e) => handleChange('link', e.target.value)} placeholder="https://..." className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+        <div><label className="block mb-2" style={styles.label}>Link Name (Optional):</label><input type="text" value={linkName} onChange={(e) => handleChange('linkName', e.target.value)} placeholder="Video, Image, etc." className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+      </div>
+      <div><label className="block mb-2" style={styles.label}>Media (Image URL or Text):</label><textarea value={media} onChange={(e) => handleChange('media', e.target.value)} rows={3} placeholder="https://i.imgur.com/....png" className="border rounded px-4 py-2 w-full resize-none" style={styles.input} /></div>
+      
+      <button onClick={generateBBCode} className="px-4 py-2 rounded text-sm font-medium hover:opacity-80 flex items-center gap-2" style={styles.copyButton}>
+        {copied ? <><Check size={16} /> Copied!</> : <><Copy size={16} /> Copy BBCode</>}
+      </button>
+      {bbcode && (
+        <textarea value={bbcode} readOnly rows={5} className="border rounded px-4 py-2 w-full font-mono text-xs resize-none" style={styles.input} onClick={(e) => e.target.select()} />
+      )}
+    </div>
+  );
+}
+
+// --- 16. OPERATION LOG (STANDALONE) MODULE ---
+function OperationLogStandaloneModuleForm({ lightMode, formData, setFormData, removeModule, combinedName }) {
+  const { operationName, date, investigators, report, documentationImages, documentationLinks, bbcode, copied } = formData;
+  const styles = getStyles(lightMode);
+  const unitOptions = ['MCD', 'DSU', 'DSG', 'GND']; // Standardized options
+  
+  const handleChange = (field, value) => setFormData({ [field]: value });
+
+  // --- Investigator List Handlers ---
+  const handleInvestigatorChange = (index, field, value) => {
+    const newList = [...(Array.isArray(investigators) ? investigators : [])]; // <-- FIX: Add safeguard
+    newList[index][field] = value;
+    setFormData({ investigators: newList });
+  };
+
+  const addInvestigator = () => {
+    const newList = [...(Array.isArray(investigators) ? investigators : []), { id: `officer_${Date.now()}`, name: 'Rank Firstname Lastname', unit: 'DSU' }]; // <-- FIX: Add safeguard
+    setFormData({ investigators: newList });
+  };
+
+  const removeInvestigator = (index) => {
+    if (!Array.isArray(investigators) || investigators.length <= 1) return; // Keep at least one // <-- FIX: Add safeguard
+    const newList = investigators.filter((_, i) => i !== index); // <-- FIX: Add safeguard
+    setFormData({ investigators: newList });
+  };
+  
+  const generateBBCode = () => {
+    let code = `[spoiler=${operationName || 'Operation Name'} - ${date || 'DD/MMM/YYYY'}]\n`;
+    code += `[lspdsubtitle]${operationName || 'OPERATION NAME'}[/lspdsubtitle]\n`;
+    code += `[divbox=white][list=none]\n`;
+    code += `[*]Investigators Involved\n[list]\n`;
+    {Array.isArray(investigators) && investigators.forEach(inv => { // <-- FIX: Add safeguard
+      code += `[*]${inv.name} - (${inv.unit})\n`;
+    });}
+    code += `[/list]\n`;
+    code += `[hr]------------------OPERATION REPORT------------------[/hr]\n\n`;
+    code += `${report || 'DESCRIPTION OF THE OPERATION AND OBJECTIVES ACHIEVED'}\n\n`;
+    code += `[spoiler=Documentation]\n`;
+    code += `${documentationImages || '[img]PHOTOGRAPHIC DOCUMENTATION[/img]'}\n`;
+    code += `${documentationLinks || '[url=VIDEO OR OTHER DOCUMENTATION]TITLE[/url]'}\n`;
+    code += `[/spoiler]\n`;
+    code += `[/list][/divbox]\n`;
+    code += `[/spoiler]`;
+    
+    handleChange('bbcode', code);
+    copyToClipboard(code, (val) => handleChange('copied', val));
+  };
+  
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center mb-2">
+        <h3 className="text-xl font-semibold" style={styles.label}>Operation Log: {operationName}</h3>
+        <button onClick={removeModule} className="p-2 rounded hover:opacity-80" style={styles.moduleRemoveButton}><Trash2 size={16} /></button>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div><label className="block mb-2" style={styles.label}>Operation Name:</label><input type="text" value={operationName} onChange={(e) => handleChange('operationName', e.target.value)} className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+        <div><label className="block mb-2" style={styles.label}>Date:</label><input type="text" value={date} onChange={(e) => handleChange('date', e.target.value)} placeholder="DD/MMM/YYYY" className="border rounded px-4 py-2 w-full" style={styles.input} /></div>
+      </div>
+      
+      {/* Investigators List */}
+      <div className="space-y-3">
+        <label className="block mb-2 font-medium" style={styles.label}>Investigators Involved:</label>
+        {Array.isArray(investigators) && investigators.map((inv, index) => ( // <-- FIX: Add safeguard
+          <div key={inv.id} className="flex items-center gap-2">
+            <input type="text" value={inv.name} onChange={(e) => handleInvestigatorChange(index, 'name', e.target.value)} placeholder="Rank Firstname Lastname" className="border rounded px-4 py-2 w-full" style={styles.input} />
+            <select value={inv.unit} onChange={(e) => handleInvestigatorChange(index, 'unit', e.target.value)} className="border rounded px-4 py-2" style={styles.input}>
+              {unitOptions.map(unit => <option key={unit} value={unit}>{unit}</option>)}
+            </select>
+            <button onClick={() => removeInvestigator(index)} className="p-2 rounded hover:opacity-80" style={styles.moduleRemoveButton}><Trash2 size={16} /></button>
+          </div>
+        ))}
+        <button onClick={addInvestigator} className="px-4 py-2 rounded text-sm font-medium hover:opacity-80 flex items-center gap-2" style={styles.moduleButton}><Plus size={16} /> Add Investigator</button>
+      </div>
+      
+      <div><label className="block mb-2" style={styles.label}>Operation Report:</label><textarea value={report} onChange={(e) => handleChange('report', e.target.value)} rows={5} className="border rounded px-4 py-2 w-full resize-none" style={styles.input} /></div>
+      <div><label className="block mb-2" style={styles.label}>Documentation (Images):</label><textarea value={documentationImages} onChange={(e) => handleChange('documentationImages', e.target.value)} rows={3} className="border rounded px-4 py-2 w-full resize-none font-mono text-sm" style={styles.input} /></div>
+      <div><label className="block mb-2" style={styles.label}>Documentation (Links):</label><textarea value={documentationLinks} onChange={(e) => handleChange('documentationLinks', e.target.value)} rows={3} className="border rounded px-4 py-2 w-full resize-none font-mono text-sm" style={styles.input} /></div>
+      
+      <button onClick={generateBBCode} className="px-4 py-2 rounded text-sm font-medium hover:opacity-80 flex items-center gap-2" style={styles.copyButton}>
+        {copied ? <><Check size={16} /> Copied!</> : <><Copy size={16} /> Copy BBCode</>}
+      </button>
+      {bbcode && (
+        <textarea value={bbcode} readOnly rows={5} className="border rounded px-4 py-2 w-full font-mono text-xs resize-none" style={styles.input} onClick={(e) => e.target.select()} />
+      )}
+    </div>
+  );
+}
+
+
+// --- 17. PLACEHOLDER FORM ---
+function PlaceholderForm({ lightMode, formTitle }) {
+    const styles = getStyles(lightMode);
+    return (
+        <div className="text-center py-12">
+            <h2 className="text-2xl mb-4" style={{ color: lightMode ? '#000' : '#f3f4f6' }}>{formTitle}</h2>
+            <p style={{ color: lightMode ? '#666' : '#9ca3af' }}>This form is under construction.</p>
+        </div>
+    );
+}
+
+// --- NEW LOGIN PAGE COMPONENT ---
+function LoginPage({ onLoginSuccess }) {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+
+  const handleLogin = (e) => {
+    e.preventDefault();
+    setError(''); // Clear previous errors
+    
+    // Check for the hardcoded credentials
+    if (email === 'db@lspd.me' && password === 'ecrpdbgov') {
+      onLoginSuccess();
+    } else {
+      setError('Invalid email or password.');
+    }
+  };
+
+  return (
+    <div className="flex items-center justify-center min-h-screen" style={{ backgroundColor: '#121212' }}>
+      <div className="w-full max-w-md p-8 space-y-6 rounded-lg shadow-xl" style={{ backgroundColor: '#1a1a1a' }}>
+        <div className="flex justify-center">
+          <img 
+            src="https://i.imgur.com/p2moqMn.png" 
+            alt="DB Logo" 
+            className="w-24 h-24 rounded-md"
+            onError={(e) => {
+              e.target.onerror = null; 
+              e.target.src = 'https://placehold.co/96x96/1e3a8a/FFFFFF?text=DB';
+            }}
+          />
+        </div>
+        <h2 className="text-2xl font-bold text-center text-white">DB DATABASE LOGIN</h2>
+        <form className="space-y-6" onSubmit={handleLogin}>
+          <div>
+            <label className="block text-sm font-medium" style={{ color: '#d1d5db' }}>Email</label>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="w-full px-4 py-2 mt-1 border rounded focus:ring-blue-500 focus:border-blue-500 transition"
+              style={{ backgroundColor: '#1a1a1a', color: '#fff', borderColor: '#4b5563' }}
+              required
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium" style={{ color: '#d1d5db' }}>Password</label>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="w-full px-4 py-2 mt-1 border rounded focus:ring-blue-500 focus:border-blue-500 transition"
+              style={{ backgroundColor: '#1a1a1a', color: '#fff', borderColor: '#4b5563' }}
+              required
+            />
+          </div>
+          {error && (
+            <p className="text-sm text-center text-red-500">{error}</p>
+          )}
+          <div>
+            <button
+              type="submit"
+              className="w-full px-4 py-2 font-medium text-white rounded hover:opacity-80 transition duration-150"
+              style={{ backgroundColor: '#1e3a8a' }}
+            >
+              Login
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+
+// --- HOME CONTENT COMPONENT (MOVED) ---
+// By defining this *outside* DatabaseApp, it won't re-render on every keystroke
+function HomeContent({ 
+  lightMode, userName, setUserName, userRank, setUserRank, 
+  userId, userPfpUrl, setUserPfpUrl, globalSignature, setGlobalSignature 
+}) {
+    const styles = getStyles(lightMode);
+    // Use the lifted state and setters
+    const [nameSaveStatus, setNameSaveStatus] = useState(false);
+    const [rankSaveStatus, setRankSaveStatus] = useState(false);
+    const [pfpSaveStatus, setPfpSaveStatus] = useState(false);
+    const [sigSaveStatus, setSigSaveStatus] = useState(false); // NEW: Save status for Signature
+
+    // Get a reference to the user's settings document
+    const getUserDocRef = () => {
+        if (!userId || !firebaseInitialized) return null; // Check initialization
+        // Private data path: /artifacts/{appId}/users/{userId}/settings/user_profile
+        return doc(db, 'artifacts', appId, 'users', userId, 'settings', 'user_profile');
+    };
+
+    const handleSaveName = async () => {
+        const userDocRef = getUserDocRef();
+        if (!userDocRef) {
+            console.error("User not authenticated or Firebase not ready, cannot save.");
+            return;
+        }
+        
+        setNameSaveStatus(true);
+        try {
+            await setDoc(userDocRef, { 
+                name: userName,
+                updatedAt: serverTimestamp() 
+            }, { merge: true });
+        } catch (error) {
+            console.error("Error saving name:", error);
+        }
+        setTimeout(() => setNameSaveStatus(false), 2000);
+    };
+    
+    const handleSaveRank = async () => {
+        const userDocRef = getUserDocRef();
+        if (!userDocRef) {
+            console.error("User not authenticated or Firebase not ready, cannot save.");
+            return;
+        }
+
+        setRankSaveStatus(true);
+        try {
+            await setDoc(userDocRef, { 
+                rank: userRank,
+                updatedAt: serverTimestamp() 
+            }, { merge: true });
+        } catch (error) {
+            console.error("Error saving rank:", error);
+        }
+        setTimeout(() => setRankSaveStatus(false), 2000);
+    };
+
+    // NEW: Handler for saving the PFP URL
+    const handleSavePfp = async () => {
+        const userDocRef = getUserDocRef();
+        if (!userDocRef) {
+            console.error("User not authenticated or Firebase not ready, cannot save.");
+            return;
+        }
+
+        setPfpSaveStatus(true);
+        try {
+            await setDoc(userDocRef, { 
+                pfpUrl: userPfpUrl, // Save the pfpUrl
+                updatedAt: serverTimestamp() 
+            }, { merge: true });
+        } catch (error) {
+            console.error("Error saving PFP URL:", error);
+        }
+        setTimeout(() => setPfpSaveStatus(false), 2000);
+    };
+    
+    // NEW: Handler for saving the Global Signature
+    const handleSaveSignature = async () => {
+        const userDocRef = getUserDocRef();
+        if (!userDocRef) {
+            console.error("User not authenticated or Firebase not ready, cannot save.");
+            return;
+        }
+
+        setSigSaveStatus(true);
+        try {
+            await setDoc(userDocRef, { 
+                globalSignature: globalSignature, // Save the globalSignature
+                updatedAt: serverTimestamp() 
+            }, { merge: true });
+        } catch (error) {
+            console.error("Error saving Global Signature:", error);
+        }
+        setTimeout(() => setSigSaveStatus(false), 2000);
+    };
+
+    return (
+      <>
+        <h2 className="text-2xl mb-6" style={{ color: lightMode ? '#000' : '#f3f4f6' }}>Welcome to the Los Santos Police Department paperwork tool</h2>
+        
+        {/* Your Name Input */}
+        <div className="flex items-center space-x-4 mb-4">
+            <label style={styles.label} className="w-24">Your name:</label>
+            <input type="text" value={userName} onChange={(e) => setUserName(e.target.value)} 
+                className="border rounded px-4 py-2 flex-1" 
+                style={styles.input} 
+            />
+            <button 
+                className={`px-4 py-2 rounded font-medium transition duration-150 hover:opacity-80 w-24`}
+                style={{ 
+                    color: '#fff',
+                    backgroundColor: nameSaveStatus ? (lightMode ? '#15803d' : '#166534') : (lightMode ? '#2563eb' : '#1e3a8a')
+                }}
+                onClick={handleSaveName}
+            >
+                {nameSaveStatus ? 'Saved!' : 'Save'}
+            </button>
+        </div>
+        
+        {/* Your Rank Input */}
+        <div className="flex items-center space-x-4 mb-4">
+            <label style={styles.label} className="w-24">Your rank:</label>
+            <input type="text" value={userRank} onChange={(e) => setUserRank(e.target.value)} 
+                className="border rounded px-4 py-2 flex-1" 
+                style={styles.input} 
+            />
+            <button 
+                className={`px-4 py-2 rounded font-medium transition duration-150 hover:opacity-80 w-24`}
+                style={{ 
+                    color: '#fff',
+                    backgroundColor: rankSaveStatus ? (lightMode ? '#15803d' : '#166534') : (lightMode ? '#2563eb' : '#1e3a8a')
+                }}
+                onClick={handleSaveRank}
+            >
+                {rankSaveStatus ? 'Saved!' : 'Save'}
+            </button>
+        </div>
+
+        {/* NEW: PFP URL Input */}
+        <div className="flex items-center space-x-4 mb-4">
+            <label style={styles.label} className="w-24">PFP URL:</label>
+            <input 
+                type="text" 
+                value={userPfpUrl} 
+                onChange={(e) => setUserPfpUrl(e.target.value)} 
+                className="border rounded px-4 py-2 flex-1" 
+                style={styles.input} 
+                placeholder="https://i.imgur.com/your-image.png"
+            />
+            <button 
+                className={`px-4 py-2 rounded font-medium transition duration-150 hover:opacity-80 w-24`}
+                style={{ 
+                    color: '#fff',
+                    backgroundColor: pfpSaveStatus ? (lightMode ? '#15803d' : '#166534') : (lightMode ? '#2563eb' : '#1e3a8a')
+                }}
+                onClick={handleSavePfp}
+            >
+                {pfpSaveStatus ? 'Saved!' : 'Save'}
+            </button>
+        </div>
+        
+        {/* NEW: Global Signature Input */}
+        <div className="flex items-start space-x-4 mb-8">
+            <label style={styles.label} className="w-24 pt-2">Global Signature:</label>
+            <textarea 
+                value={globalSignature} 
+                onChange={(e) => setGlobalSignature(e.target.value)} 
+                className="border rounded px-4 py-2 flex-1 font-mono text-sm" 
+                style={styles.input} 
+                rows={7}
+                placeholder="EXAMPLE:
+
+[img]https://i.imgur.com/fgCY3nj.png[/img]
+Rondal Olsson, Detective I
+Detective, Major Crimes Division
+Los Santos Police Department"
+            />
+            <button 
+                className={`px-4 py-2 rounded font-medium transition duration-150 hover:opacity-80 w-24`}
+                style={{ 
+                    color: '#fff',
+                    backgroundColor: sigSaveStatus ? (lightMode ? '#15803d' : '#166534') : (lightMode ? '#2563eb' : '#1e3a8a')
+                }}
+                onClick={handleSaveSignature}
+            >
+                {sigSaveStatus ? 'Saved!' : 'Save'}
+            </button>
+        </div>
+      </>
+    );
+}
+
+
+// --- MAIN APP COMPONENT (Renamed from App to DatabaseApp) ---
+// This is the entire application you've built so far.
+function DatabaseApp({ userId, onLogout }) { // Added onLogout prop
+  // NEW: Lifted state for name and rank up to the main app
+  const [userName, setUserName] = useState('');
+  const [userRank, setUserRank] = useState(''); // Example rank
+  const [userPfpUrl, setUserPfpUrl] = useState(''); // NEW: PFP URL state
+  const [globalSignature, setGlobalSignature] = useState(''); // NEW: Global Signature state
+  
+  const [activeMenu, setActiveMenu] = useState('home');
+  const [lightMode, setLightMode] = useState(false); 
+  const [detectiveOpen, setDetectiveOpen] = useState(false);
+  const [caseFileOpen, setCaseFileOpen] = useState(false); // NEW
+  const [evidenceOpen, setEvidenceOpen] = useState(false); // NEW
+  const [isLoading, setIsLoading] = useState(true); // Loading state for user data
+  const [profileOpen, setProfileOpen] = useState(false); // NEW: State for profile dropdown
+
+  // --- NEW: Load user data from Firestore on startup ---
+  useEffect(() => {
+      if (!userId || !firebaseInitialized) {
+          setIsLoading(false);
+          return; // Don't load if no user or firebase
+      }
+
+      const loadUserData = async () => {
+          const userDocRef = doc(db, 'artifacts', appId, 'users', userId, 'settings', 'user_profile');
+          try {
+              const docSnap = await getDoc(userDocRef);
+              if (docSnap.exists()) {
+                  const data = docSnap.data();
+                  setUserName(data.name || '');
+                  setUserRank(data.rank || '');
+                  setUserPfpUrl(data.pfpUrl || ''); // NEW: Load PFP URL
+                  setGlobalSignature(data.globalSignature || ''); // NEW: Load Global Signature
+              } else {
+                  console.log("No user profile found, using defaults.");
+              }
+          } catch (error) {
+              console.error("Error loading user data:", error);
+          } finally {
+              setIsLoading(false);
+          }
+      };
+
+      loadUserData();
+  }, [userId]); // Run only when userId is available
+
+
+  // Create a combined name/rank string to pass to forms
+  const combinedName = `${userRank} ${userName}`;
+
+  // --- NEW: This map now includes the post URLs ---
+  const componentConfig = {
+    // --- Detective Operations ---
+    'Firearms Logging Database': { 
+      Component: FirearmsForm, 
+      getInitialState: getFirearmsInitialState,
+      url: 'https://gov.eclipse-rp.net/posting.php?mode=reply&t=24392',
+      isEvidence: false
+    },
+    'Monetary Recovery Reports': { 
+      Component: MonetaryRecoveryForm, 
+      getInitialState: getMonetaryRecoveryInitialState,
+      url: 'https://gov.eclipse-rp.net/posting.php?mode=reply&t=49963',
+      isEvidence: false
+    },
+    'Narcotic Confiscation Reports': { 
+      Component: NarcoticConfiscationForm, 
+      getInitialState: getNarcoticConfiscationInitialState,
+      url: 'https://gov.eclipse-rp.net/posting.php?mode=reply&t=11223',
+      isEvidence: false
+    },
+    'Covert Incident Reports': { 
+      Component: CovertIncidentForm, 
+      getInitialState: getCovertIncidentInitialState,
+      url: 'https://gov.eclipse-rp.net/posting.php?mode=reply&t=204532',
+      isEvidence: false
+    },
+    'Admissions of Guilt': { 
+      Component: AdmissionsOfGuiltForm, 
+      getInitialState: getAdmissionsOfGuiltInitialState,
+      url: 'https://gov.eclipse-rp.net/posting.php?mode=reply&t=47012',
+      isEvidence: false
+    },
+    'Trace Log': { 
+      Component: TraceLogForm, 
+      getInitialState: getTraceLogInitialState,
+      url: 'https://gov.eclipse-rp.net/posting.php?mode=reply&t=123112',
+      isEvidence: false
+    },
+    'Operation Log': { 
+      Component: OperationLogsForm, 
+      getInitialState: getOperationLogsInitialState,
+      url: 'https://gov.eclipse-rp.net/posting.php?mode=reply&t=212100',
+      isEvidence: false
+    },
+    // --- Case File ---
+    'Case File Main': {
+      Component: CaseFileForm,
+      getInitialState: getCaseFileInitialState,
+      url: 'https://gov.eclipse-rp.net/viewforum.php?f=1219',
+      isEvidence: false
+    },
+    'Logging Updates': {
+      Component: LoggingUpdatesForm,
+      getInitialState: getLoggingUpdatesInitialState,
+      url: '', // No post URL for this one
+      isEvidence: false
+    },
+    'Case Conclusion': {
+      Component: CaseConclusionForm,
+      getInitialState: getCaseConclusionInitialState,
+      url: '', // No post URL for this one
+      isEvidence: false
+    },
+    // --- Evidence Modules ---
+    'Suspect Log': {
+      Component: SuspectModuleForm,
+      getInitialState: getSuspectLogInitialState,
+      url: '',
+      isEvidence: true // Mark as evidence
+    },
+    'Victim / Witness Log': {
+      Component: VictimWitnessModuleForm,
+      getInitialState: getVictimWitnessLogInitialState,
+      url: '',
+      isEvidence: true
+    },
+    'Interrogation Log': {
+      Component: InterrogationModuleForm,
+      getInitialState: getInterrogationLogInitialState,
+      url: '',
+      isEvidence: true
+    },
+    'Media Log': {
+      Component: MediaLogModuleForm,
+      getInitialState: getMediaLogInitialState,
+      url: '',
+      isEvidence: true
+    },
+    'Operation Log (Standalone)': {
+      Component: OperationLogStandaloneModuleForm,
+      getInitialState: getOperationLogStandaloneInitialState,
+      url: '',
+      isEvidence: true
+    }
+  };
+
+  const menuItems = [
+    { id: 'home', label: 'Home', icon: Home, isCategory: false },
+    { id: 'detective', label: 'Detective Operations', icon: FileText, isCategory: true, state: detectiveOpen, setState: setDetectiveOpen },
+    { id: 'casefile', label: 'Case File', icon: Folder, isCategory: true, state: caseFileOpen, setState: setCaseFileOpen },
+    { id: 'evidence', label: 'Evidence Modules', icon: ClipboardList, isCategory: true, state: evidenceOpen, setState: setEvidenceOpen }
+  ];
+
+  // Get the list of sub-items directly from the config map
+  const detectiveSubItems = Object.keys(componentConfig).filter(k => 
+    !componentConfig[k].isEvidence && k !== 'Case File Main' && k !== 'Logging Updates' && k !== 'Case Conclusion'
+  );
+  const caseFileSubItems = ['Case File Main', 'Logging Updates', 'Case Conclusion'];
+  const evidenceSubItems = Object.keys(componentConfig).filter(k => componentConfig[k].isEvidence);
+
+
+  // Define accent colors based on light/dark mode for sidebar active/hover states
+  const activeBorderColor = lightMode ? '#6b7280' : '#3b82f6'; // Blue-500 for border in dark mode
+  const activeBackgroundColor = lightMode ? '#e5e7eb' : '#1e3a8a'; // Dark Blue-900 for active background
+
+  // --- Dynamic Content Rendering ---
+  const renderActiveComponent = () => {
+      if (isLoading) {
+          return <div className="text-center py-12" style={{ color: lightMode ? '#666' : '#9ca3af' }}>Loading user data...</div>;
+      }
+
+      if (activeMenu === 'home') {
+          return <HomeContent 
+                    lightMode={lightMode} 
+                    userName={userName}
+                    setUserName={setUserName}
+                    userRank={userRank}
+                    setUserRank={setUserRank}
+                    userId={userId} // Pass userId for saving
+                    userPfpUrl={userPfpUrl} // NEW: Pass PFP state down
+                    setUserPfpUrl={setUserPfpUrl} // NEW: Pass PFP setter down
+                    globalSignature={globalSignature} // NEW: Pass Global Sig
+                    setGlobalSignature={setGlobalSignature} // NEW: Pass Global Sig setter
+                />;
+      }
+      
+      // Check if the active menu is one of the forms
+      const config = componentConfig[activeMenu];
+      if (config) {
+        // Get the initial state, passing in the combined name if the function expects it
+        const initialState = config.getInitialState(combinedName, globalSignature);
+        
+        if (config.isEvidence) {
+          // Render using the multi-module EvidenceLogWrapper
+          return (
+            <EvidenceLogWrapper
+              ModuleComponent={config.Component}
+              formTitle={activeMenu}
+              initialState={initialState}
+              lightMode={lightMode}
+              userId={userId}
+              combinedName={combinedName}
+              globalSignature={globalSignature}
+            />
+          );
+        } else {
+          // Render using the standard MultiPageFormWrapper
+          return (
+            <MultiPageFormWrapper 
+              FormComponent={config.Component}
+              formTitle={activeMenu}
+              initialState={initialState} // Pass the pre-populated state
+              lightMode={lightMode}
+              postUrl={config.url} // Pass the URL to the wrapper
+              userId={userId} // Pass userId for saving/loading
+              globalSignature={globalSignature} // Pass global sig
+            />
+          );
+        }
+      }
+      
+    // Fallback for any other menu items
+    return (
+        <div className="text-center py-12">
+            <h2 className="text-2xl mb-4" style={{ color: lightMode ? '#000' : '#f3f4f6' }}>{activeMenu}</h2>
+            <p style={{ color: lightMode ? '#666' : '#9ca3af' }}>This form is under construction</p>
+        </div>
+    );
+  };
+
+  // --- Helper to render sub-menus ---
+  const renderSubMenu = (subItems) => {
+    const subItemStyle = (sub) => ({
+      color: lightMode ? (activeMenu === sub ? '#000' : '#666') : (activeMenu === sub ? '#fff' : '#9ca3af'), 
+      backgroundColor: activeMenu === sub ? (lightMode ? '#d1d5db' : '#1f2937') : 'transparent',
+      transition: 'background-color 150ms'
+    });
+
+    return (
+      <div className="pl-8">
+        {subItems.map((sub, i) => (
+          <button 
+            key={i} 
+            onClick={() => {setActiveMenu(sub);}}
+            className="w-full px-4 py-2 text-left text-xs transition duration-150 hover:bg-gray-700" 
+            style={subItemStyle(sub)}
+          >
+            {sub}
+          </button>
+        ))}
+      </div>
+    );
+  };
+
+  return (
+    <div className="flex h-screen font-sans" style={{ backgroundColor: lightMode ? '#fff' : '#121212', color: lightMode ? '#000' : '#f3f4f6' }}>
+      
+      {/* Sidebar Container */}
+      <div className="w-64 flex flex-col border-r" style={{ backgroundColor: lightMode ? '#f5f5f5' : '#1a1a1a', borderColor: lightMode ? '#e0e0e0' : '#2d2d2d' }}>
+        
+        {/* Top Bar / DB Database Title + Logo */}
+        <div className="p-4 border-b flex items-center space-x-3" style={{ borderColor: lightMode ? '#e0e0e0' : '#2d2d2d' }}>
+          <img 
+            src="https://i.imgur.com/p2moqMn.png" 
+            alt="DB Logo" 
+            className="w-8 h-8 rounded-md"
+            onError={(e) => {
+              e.target.onerror = null; 
+              e.target.src = 'https://placehold.co/32x32/1e3a8a/FFFFFF?text=DB';
+            }}
+          />
+          <h1 className="text-xl font-bold">DB DATABASE</h1>
+        </div>
+        
+        {/* Navigation Menu */}
+        <nav className="flex-1 py-4 overflow-y-auto custom-scroll">
+          {menuItems.map((item) => {
+            const Icon = item.icon;
+            let subItems = [];
+            if (item.id === 'detective') subItems = detectiveSubItems;
+            if (item.id === 'casefile') subItems = caseFileSubItems;
+            if (item.id === 'evidence') subItems = evidenceSubItems;
+
+            const isMainActive = activeMenu === item.id;
+            const isSubMenuActive = item.isCategory && subItems.includes(activeMenu);
+
+            const mainItemStyle = { 
+              backgroundColor: isMainActive || isSubMenuActive ? activeBackgroundColor : 'transparent', 
+              color: lightMode ? (isMainActive || isSubMenuActive ? '#000' : '#666') : (isMainActive || isSubMenuActive ? '#fff' : '#9ca3af'), 
+              borderLeft: isMainActive || isSubMenuActive ? `4px solid ${activeBorderColor}` : 'none',
+              transition: 'background-color 150ms'
+            };
+
+            return (
+              <div key={item.id}>
+                <button 
+                  onClick={() => { 
+                    if (!item.isCategory) setActiveMenu(item.id); 
+                    if (item.isCategory) item.setState(!item.state);
+                  }} 
+                  className="w-full px-4 py-3 flex items-center space-x-3 text-left font-medium hover:bg-gray-700 transition duration-150" 
+                  style={mainItemStyle}
+                >
+                  <Icon size={18} />
+                  <span className="text-sm flex-1">{item.label}</span>
+                  {item.isCategory && (item.state || isSubMenuActive ? <ChevronDown size={16} /> : <ChevronRight size={16} />)}
+                </button>
+                
+                {item.isCategory && (item.state || isSubMenuActive) && renderSubMenu(subItems)}
+              </div>
+            );
+          })}
+        </nav>
+      </div>
+      
+      {/* Main Content Area */}
+      <div className="flex-1 flex flex-col overflow-hidden">
+        
+        {/* Header Bar */}
+        <div className="px-6 py-3 border-b flex items-center justify-end" style={{ backgroundColor: lightMode ? '#f5f5f5' : '#1a1a1a', borderColor: lightMode ? '#e0e0e0' : '#2d2d2d' }}>
+          
+          <button onClick={() => setLightMode(!lightMode)} className="px-4 py-2 rounded text-sm hover:opacity-80 transition duration-150 mr-4" style={{ backgroundColor: lightMode ? '#d1d5db' : '#1f2937', color: lightMode ? '#000' : '#fff' }}>
+             {lightMode ? '🌙 Dark Mode' : '☀️ Light Mode'}
+          </button>
+          
+          {/* --- NEW: Profile Dropdown --- */}
+          <div className="relative">
+            <button onClick={() => setProfileOpen(!profileOpen)} className="flex items-center space-x-2 cursor-pointer">
+              {/* NEW: Conditional PFP Image */}
+              {userPfpUrl ? (
+                <img src={userPfpUrl} alt="Profile" className="w-8 h-8 rounded-full object-cover" />
+              ) : (
+                <div className="w-8 h-8 rounded-full flex items-center justify-center" style={{ backgroundColor: lightMode ? '#d1d5db' : '#4b5563' }}><span className="text-xs font-semibold" style={{ color: lightMode ? '#000' : '#fff' }}>{(userName || 'PO').substring(0, 2).toUpperCase()}</span></div>
+              )}
+              <span className="text-sm">{userName || 'Police Officer'}</span>
+              <ChevronDown size={16} className="transition duration-150" style={{ color: lightMode ? '#6b7280' : '#9ca3af' }}/>
+            </button>
+
+            {/* NEW: Dropdown Menu */}
+            {profileOpen && (
+              <div 
+                className="absolute right-0 mt-2 w-48 rounded-md shadow-lg py-1 z-20"
+                style={{ backgroundColor: lightMode ? '#fff' : '#1f2937' }}
+              >
+                <button
+                  onClick={onLogout} // Use the onLogout prop from App
+                  className="flex items-center gap-2 w-full text-left px-4 py-2 text-sm transition duration-150"
+                  style={{ color: lightMode ? '#dc2626' : '#f87171' }}
+                  onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = lightMode ? '#fee2e2' : '#991b1b'; e.currentTarget.style.color = lightMode ? '#991b1b' : '#fff'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; e.currentTarget.style.color = lightMode ? '#dc2626' : '#f87171'; }}
+                >
+                  <LogOut size={14} />
+                  Log Out
+                </button>
+              </div>
+            )}
+          </div>
+          {/* --- End Profile Dropdown --- */}
+
+        </div>
+        
+        {/* Main View Area */}
+        <div className="flex-1 overflow-auto p-8 custom-scroll">
+          <div className="max-w-6xl mx-auto">
+            {/* Dynamic Content Rendering */}
+            {renderActiveComponent()}
+          </div>
+          
+          <footer className="mt-12 pt-4 text-center text-gray-600 text-sm border-t" style={{ borderColor: lightMode ? '#e0e0e0' : '#2d2d2d' }}>
+             Los Santos Police Department
+          </footer>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+// --- NEW ROOT APP COMPONENT ---
+// This component now controls whether to show the Login page or the Database app.
+
+export default function App() {
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [userId, setUserId] = useState(null); // NEW: Store the user ID
+  const [authReady, setAuthReady] = useState(false); // NEW: Track if auth check is complete
+
+  // --- NEW: Handle Firebase Auth on App Load ---
+  useEffect(() => {
+    if (!firebaseInitialized) {
+        console.error("Firebase is not initialized. Cannot set up auth.");
+        setAuthReady(true); // Allow app to proceed without auth
+        return;
+    }
+
+    const initializeAuth = async () => {
+        try {
+            await setPersistence(auth, browserSessionPersistence);
+            
+            if (initialAuthToken) {
+                await signInWithCustomToken(auth, initialAuthToken);
+            } else {
+                await signInAnonymously(auth);
+            }
+        } catch (error) {
+            console.error("Firebase sign-in failed:", error);
+            // If custom token fails, try anonymous as a fallback
+            if (error.code === 'auth/invalid-custom-token') {
+                try {
+                    await signInAnonymously(auth);
+                } catch (anonError) {
+                    console.error("Anonymous sign-in failed:", anonError);
+                }
+            }
+        }
+    };
+
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+        if (user) {
+            setUserId(user.uid);
+            console.log("User is signed in with UID:", user.uid);
+        } else {
+            setUserId(null);
+            console.log("User is signed out.");
+            // If user logs out, force them back to login
+            setIsAuthenticated(false); 
+        }
+        setAuthReady(true); // Auth check is complete
+    });
+    
+    initializeAuth();
+
+    return () => unsubscribe(); // Cleanup listener on unmount
+  }, []); // Run only once on component mount
+
+
+  const handleLoginSuccess = () => {
+    setIsAuthenticated(true);
+  };
+  
+  // NEW: Logout handler to pass down
+  const handleLogout = () => {
+    setIsAuthenticated(false);
+  };
+
+  // Show a loading screen while auth is checking
+  if (!authReady) {
+      return (
+          <div className="flex items-center justify-center min-h-screen" style={{ backgroundColor: '#121212' }}>
+              <span className="text-white">Loading...</span>
+          </div>
+      );
+  }
+
+  // Show Login page if auth is ready but user is not authenticated
+  if (!isAuthenticated) {
+    return <LoginPage onLoginSuccess={handleLoginSuccess} />;
+  }
+
+  // Show the main app if authenticated
+  return <DatabaseApp userId={userId} onLogout={handleLogout} />; // Pass logout handler
+}
