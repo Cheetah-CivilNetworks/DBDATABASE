@@ -2104,8 +2104,9 @@ function PlaceholderForm({ lightMode, formTitle }) {
 
 // --- NEW LOGIN PAGE COMPONENT ---
 function LoginPage({ onLoginSuccess }) {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  // Automatically set to the hardcoded credentials
+  const [email, setEmail] = useState('db@lspd.me'); 
+  const [password, setPassword] = useState('ecrpdbgov');
   const [error, setError] = useState('');
 
   const handleLogin = (e) => {
@@ -2116,6 +2117,7 @@ function LoginPage({ onLoginSuccess }) {
     if (email === 'db@lspd.me' && password === 'ecrpdbgov') {
       onLoginSuccess();
     } else {
+      // This error should almost never appear now that the fields are pre-filled
       setError('Invalid email or password.');
     }
   };
@@ -2140,7 +2142,7 @@ function LoginPage({ onLoginSuccess }) {
             <label className="block text-sm font-medium" style={{ color: '#d1d5db' }}>Email</label>
             <input
               type="email"
-              value={email}
+              value={email} // Value is now pre-filled
               onChange={(e) => setEmail(e.target.value)}
               className="w-full px-4 py-2 mt-1 border rounded focus:ring-blue-500 focus:border-blue-500 transition"
               style={{ backgroundColor: '#1a1a1a', color: '#fff', borderColor: '#4b5563' }}
@@ -2151,7 +2153,7 @@ function LoginPage({ onLoginSuccess }) {
             <label className="block text-sm font-medium" style={{ color: '#d1d5db' }}>Password</label>
             <input
               type="password"
-              value={password}
+              value={password} // Value is now pre-filled
               onChange={(e) => setPassword(e.target.value)}
               className="w-full px-4 py-2 mt-1 border rounded focus:ring-blue-500 focus:border-blue-500 transition"
               style={{ backgroundColor: '#1a1a1a', color: '#fff', borderColor: '#4b5563' }}
